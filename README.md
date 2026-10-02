@@ -9,13 +9,24 @@ pip install -r requirements.txt
 python -m kb ingest                 # load every workbook in config/profiles/
 python -m kb ingest config/profiles/dayton.yaml
 python -m kb stats
+python -m kb embed                  # embed any rows without vectors (ingest does this automatically)
 python -m kb search "single sign on" --status STANDARD
+python -m kb search "vendor-hosted cloud" --mode keyword   # or semantic; default is hybrid
 python -m kb export data/records.jsonl
 ```
 
 - `config/profiles/*.yaml` - one per workbook: sheets, header row, column roles, how the answer is encoded.
 - `config/scales.yaml` - maps each worksheet's response vocabulary onto the internal statuses in `kb/statuses.py`.
-- `data/kb.sqlite` - generated store (records + FTS5 keyword index). Safe to delete and rebuild.
+- `data/kb.sqlite` - generated store (records, FTS5 keyword index, embedding cache). Safe to delete and rebuild.
+
+### Search
+Hybrid search merges keyword (BM25) and semantic (embedding) rankings with reciprocal rank fusion.
+Embeddings run locally on CPU via `fastembed` (ONNX) - no content leaves the machine.
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `KB_EMBED_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model (vectors are cached per model, so switching is safe) |
+| `KB_MODEL_CACHE` | `./models` | Where model files are downloaded; bake into the image for Azure |
 
 ### Adding a workbook
 1. Copy the closest existing profile, set `file`, `source`, sheet names, `header_row` and column letters.

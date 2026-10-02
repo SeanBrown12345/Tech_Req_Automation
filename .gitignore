@@ -4,3 +4,5 @@ __pycache__/
 data/
 # Client worksheets contain proposal content; keep them out of the repo
 Worksheets/
+# Downloaded embedding model files
+models/

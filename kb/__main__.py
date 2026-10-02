@@ -1,4 +1,4 @@
-"""Command line: python -m kb {ingest,stats,search,export}."""
+"""Command line: python -m kb {ingest,embed,stats,search,export}."""
 
 import argparse
 import json
@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from kb import store
+from kb.embed import Embedder
 from kb.extract import extract_profile
 from kb.profile import load_profile, load_scales
 
@@ -35,7 +36,17 @@ def cmd_ingest(args, conn):
                 print(f"    ! unmapped {signal} value {value!r} x{n} -> add it to config/scales.yaml")
             if rep.multi_marked:
                 print(f"    ! {rep.multi_marked} rows had more than one answer column marked (first one used)")
+    if not args.no_embed:
+        cmd_embed(args, conn)
     return 1 if failed else 0
+
+
+def cmd_embed(args, conn):
+    embedder = Embedder()
+    added = store.embed_missing(conn, embedder)
+    print(f"\nEmbeddings ({embedder.model_name}): {added} new" if added
+          else f"\nEmbeddings ({embedder.model_name}): up to date")
+    return 0
 
 
 def cmd_stats(args, conn):
@@ -52,8 +63,10 @@ def cmd_stats(args, conn):
 
 
 def cmd_search(args, conn):
-    for r in store.search(conn, args.query, args.limit, args.status):
-        print(f"\n[{r['status'] or '?'}] {r['client']} / {r['sheet']} {r['req_id'] or ''}  (raw: {r['answer_raw']})")
+    for r in store.search(conn, args.query, args.limit, args.status, mode=args.mode):
+        sim = f"sim={r['similarity']:.2f}, " if r["similarity"] is not None else ""
+        print(f"\n[{r['status'] or '?'}] {r['client']} / {r['sheet']} {r['req_id'] or ''}"
+              f"  ({sim}via {'+'.join(r['found_by'])}; raw: {r['answer_raw']})")
         if r["parent_text"]:
             print(f"  under: {r['parent_text']}")
         print(f"  REQ: {r['requirement']}")
@@ -85,7 +98,11 @@ def main(argv=None):
 
     p = sub.add_parser("ingest", help="Load workbooks described by profiles (default: all in config/profiles)")
     p.add_argument("profiles", nargs="*")
+    p.add_argument("--no-embed", action="store_true", help="Skip computing embeddings after loading")
     p.set_defaults(func=cmd_ingest)
+
+    p = sub.add_parser("embed", help="Compute embeddings for records that don't have one yet")
+    p.set_defaults(func=cmd_embed)
 
     p = sub.add_parser("stats", help="Show what's loaded")
     p.set_defaults(func=cmd_stats)
@@ -94,6 +111,7 @@ def main(argv=None):
     p.add_argument("query")
     p.add_argument("-n", "--limit", type=int, default=10)
     p.add_argument("--status", help="Only records with this internal status")
+    p.add_argument("--mode", choices=["hybrid", "keyword", "semantic"], default="hybrid")
     p.set_defaults(func=cmd_search)
 
     p = sub.add_parser("export", help="Dump all records as JSONL")
