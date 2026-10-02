@@ -9,6 +9,7 @@ if str(ROOT) not in sys.path:
 
 import streamlit as st  # noqa: E402
 
+from app.admin_layout import admin_layout  # noqa: E402
 from app.header import APP_NAME, render_header  # noqa: E402
 
 st.set_page_config(page_title=APP_NAME, page_icon=":material/fact_check:", layout="wide")
@@ -25,17 +26,12 @@ page = st.navigation([draft, *admin], position="hidden")
 in_admin = page.url_path in {p.url_path for p in admin}
 render_header(draft, admin[0], in_admin)
 
-# Only the admin pages get a sidebar.
-if in_admin:
-    with st.sidebar:
-        st.caption("KNOWLEDGE BASE ADMIN")
-        for p in admin:
-            st.page_link(p)
-        st.divider()
-        st.page_link(draft, label="Back to drafting", icon=":material/arrow_back:")
-else:
-    # Coming back from an admin page leaves an empty sidebar shell behind; hide it and its toggle.
-    st.html("<style>section[data-testid='stSidebar'], [data-testid='stExpandSidebarButton'],"
-            " [data-testid='stSidebarCollapsedControl'] { display: none !important; }</style>")
+# No sidebar anywhere: admin navigation lives in the page itself (see admin_layout).
+st.html("<style>section[data-testid='stSidebar'], [data-testid='stExpandSidebarButton'],"
+        " [data-testid='stSidebarCollapsedControl'] { display: none !important; }</style>")
 
-page.run()
+if in_admin:
+    with admin_layout(admin, page):
+        page.run()
+else:
+    page.run()
