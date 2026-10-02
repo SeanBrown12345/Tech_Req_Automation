@@ -22,16 +22,19 @@ admin = [
     st.Page(views / "add_worksheet.py", title="Add worksheet", icon=":material/upload_file:", url_path="add_worksheet"),
 ]
 page = st.navigation([draft, *admin], position="hidden")
-render_header(admin[0])
+render_header(draft, admin[0])
 
-with st.sidebar:
-    if page.url_path in {p.url_path for p in admin}:
+# Only the admin pages get a sidebar.
+if page.url_path in {p.url_path for p in admin}:
+    with st.sidebar:
         st.caption("KNOWLEDGE BASE ADMIN")
         for p in admin:
             st.page_link(p)
         st.divider()
         st.page_link(draft, label="Back to drafting", icon=":material/arrow_back:")
-    else:
-        st.page_link(draft)
+else:
+    # Coming back from an admin page leaves an empty sidebar shell behind; hide it and its toggle.
+    st.html("<style>section[data-testid='stSidebar'], [data-testid='stExpandSidebarButton'],"
+            " [data-testid='stSidebarCollapsedControl'] { display: none !important; }</style>")
 
 page.run()

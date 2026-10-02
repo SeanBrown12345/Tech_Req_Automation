@@ -1,5 +1,5 @@
-"""Top banner shared with our other apps: company logo, separator, app name, and a gear that opens
-the knowledge-base admin pages."""
+"""Top banner shared with our other apps: company logo (links home), separator, app name, and a gear
+that opens the knowledge-base admin pages."""
 
 import base64
 from pathlib import Path
@@ -54,18 +54,32 @@ section[data-testid="stSidebar"] {{ top: {BANNER_HEIGHT}; height: calc(100vh - {
 .st-key-reqfill-gear a:hover {{ background: rgba(255, 255, 255, 0.15); }}
 .st-key-reqfill-gear a span, .st-key-reqfill-gear a svg {{ color: #fff !important; fill: #fff; font-size: 1.35rem; }}
 .st-key-reqfill-gear a p {{ display: none; }}
+/* Home link: an invisible page link laid exactly over the logo. */
+.st-key-reqfill-home {{
+    position: fixed; top: 0; left: 1.25rem; z-index: 1000061; width: 120px; gap: 0;
+}}
+.st-key-reqfill-home [data-testid="stElementContainer"], .st-key-reqfill-home [data-testid="stPageLink"] {{
+    margin: 0; padding: 0;
+}}
+.st-key-reqfill-home a {{
+    width: 120px; height: {BANNER_HEIGHT}; min-height: 0; padding: 0; margin: 0;
+    background: transparent !important; border-radius: 0; cursor: pointer;
+}}
+.st-key-reqfill-home a > * {{ display: none; }}
 </style>
 """
 
 
-def render_header(admin_page) -> None:
-    """Draw the banner; the gear links to `admin_page` (an st.Page)."""
+def render_header(home_page, admin_page) -> None:
+    """Draw the banner; the logo links to `home_page` and the gear to `admin_page` (st.Page objects)."""
     st.html(
         _CSS
         + f'<div class="app-top-banner"><span class="app-top-logo" role="img" aria-label="Cayenta"></span>'
         '<span class="banner-sep"></span>'
         f'<span class="app-top-title">{APP_NAME}</span></div>'
     )
+    with st.container(key="reqfill-home"):
+        st.page_link(home_page, label="Home", help="Back to drafting")
     with st.container(key="reqfill-gear"):
         st.page_link(admin_page, label="Knowledge base admin", icon=":material/settings:",
                      help="Knowledge base admin: overview, search, add worksheets")
