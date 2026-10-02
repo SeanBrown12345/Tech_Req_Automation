@@ -162,10 +162,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     total       INTEGER NOT NULL DEFAULT 0,
     done        INTEGER NOT NULL DEFAULT 0,
     message     TEXT,
-    model       TEXT,
-    input_tokens  INTEGER NOT NULL DEFAULT 0,   -- uncached + cache writes
-    cached_tokens INTEGER NOT NULL DEFAULT 0,   -- cache reads
-    output_tokens INTEGER NOT NULL DEFAULT 0
+    model       TEXT
 );
 CREATE TABLE IF NOT EXISTS rows (
     job_id       TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
@@ -201,10 +198,6 @@ def connect_drafts() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")  # readers (the dashboard) don't block the drafting thread
     conn.executescript(DRAFTS_SCHEMA)
-    have = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
-    for column in ("input_tokens", "cached_tokens", "output_tokens"):  # added after the first release
-        if column not in have:
-            conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
     return conn
 
 
@@ -481,18 +474,12 @@ def _draft_batch(client: anthropic.Anthropic, system: str, sheet_plan: dict, row
         raise RuntimeError("Response was cut off (max_tokens)")
     payload = json.loads(next(b.text for b in response.content if b.type == "text"))
     by_row = {res["row"]: res for res in payload["rows"]}
-    u = response.usage
-    usage = ((u.input_tokens or 0) + (u.cache_creation_input_tokens or 0), u.cache_read_input_tokens or 0,
-             u.output_tokens or 0)
     return {r["row_num"]: _finalize(r, by_row[r["row_num"]], kept[r["row_num"]], sheet_plan)
-            for r in rows if r["row_num"] in by_row}, usage
+            for r in rows if r["row_num"] in by_row}
 
 
-def _save(conn, job_id: str, sheet: str, results: dict[int, dict], errors: dict[int, str],
-          usage: tuple[int, int, int] = (0, 0, 0)) -> None:
+def _save(conn, job_id: str, sheet: str, results: dict[int, dict], errors: dict[int, str]) -> None:
     with conn:
-        conn.execute("UPDATE jobs SET input_tokens = input_tokens + ?, cached_tokens = cached_tokens + ?,"
-                     " output_tokens = output_tokens + ? WHERE job_id = ?", (*usage, job_id))
         for row_num, res in results.items():
             conn.execute(
                 "UPDATE rows SET ai = ?, final = NULL, status = ?, confidence = ?, ai_confidence = ?,"
@@ -540,20 +527,20 @@ def _run_job(job_id: str, exclude_sources: list[str] | None) -> None:
 
         def work(sheet, system, rows):
             if conn_status(job_id) == "stopping":
-                return sheet, {}, {}, (0, 0, 0)
+                return sheet, {}, {}
             ev = {r["row_num"]: evidence[(sheet, r["row_num"])] for r in rows}
             try:
-                results, usage = _draft_batch(llm, system, sheet_plans[sheet], rows, ev)
+                results = _draft_batch(llm, system, sheet_plans[sheet], rows, ev)
                 missing = {r["row_num"]: "Not returned by the model" for r in rows if r["row_num"] not in results}
-                return sheet, results, missing, usage
+                return sheet, results, missing
             except Exception as exc:  # keep going; failed rows can be retried with Resume
-                return sheet, {}, {r["row_num"]: f"{type(exc).__name__}: {exc}" for r in rows}, (0, 0, 0)
+                return sheet, {}, {r["row_num"]: f"{type(exc).__name__}: {exc}" for r in rows}
 
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             futures = [pool.submit(work, *b) for b in batches]
             for future in as_completed(futures):
-                sheet, results, errors, usage = future.result()
-                _save(conn, job_id, sheet, results, errors, usage)
+                sheet, results, errors = future.result()
+                _save(conn, job_id, sheet, results, errors)
 
         remaining = conn.execute("SELECT COUNT(*) FROM rows WHERE job_id = ? AND ai IS NULL", (job_id,)).fetchone()[0]
         stopped = conn_status(job_id) == "stopping"
@@ -579,17 +566,6 @@ def conn_status(job_id: str) -> str | None:
         return row["status"] if row else None
     finally:
         conn.close()
-
-
-# Opus 5.5 list prices per million tokens (input, cache read, output); Matcha billing may differ.
-PRICES = {"claude-opus-5-5": (4.00, 0.20, 20.00)}
-
-
-def job_cost(job) -> float | None:
-    price = PRICES.get(job["model"])
-    if not price:
-        return None
-    return (job["input_tokens"] * price[0] + job["cached_tokens"] * price[1] + job["output_tokens"] * price[2]) / 1e6
 
 
 # ================================================================================================

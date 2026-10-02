@@ -8,8 +8,6 @@ import streamlit as st
 from app.common import STATUS_LABELS, connect, status_badge, status_label
 from kb import analysis, draft
 
-# Per-row token use measured on a full 386-row test draft; only for the up-front estimate.
-EST_INPUT_PER_ROW, EST_OUTPUT_PER_ROW = 1100, 250
 KIND_LABELS = {"choice": "Pick from list", "text": "Free text", "marks": "Mark one column"}
 CONF_LABELS = {"high": "High", "medium": "Medium", "low": "Low"}
 
@@ -126,11 +124,8 @@ def new_draft():
                  "original here so the AI can't simply copy it.")
 
     rows = draft.collect_rows(plan, _read(data))
-    price = draft.PRICES.get(draft.MODEL)
-    estimate = (len(rows) * (EST_INPUT_PER_ROW * price[0] + EST_OUTPUT_PER_ROW * price[2]) / 1e6) if price else None
     st.write(f"**{len(rows):,}** requirement rows have empty answer cells to fill"
-             + (f" · estimated cost about **${estimate:,.2f}**" if estimate else "")
-             + f" · about {max(1, round(len(rows) / 100))} min")
+             f" · about {max(1, round(len(rows) / 100))} min")
     if st.button("Start drafting", type="primary", disabled=not rows):
         job_id, _ = draft.create_job(name.strip() or uploaded.name, client.strip() or None, uploaded.name, data, plan)
         draft.start_job(job_id, plan["exclude_sources"])
@@ -153,14 +148,11 @@ def show_job(job_id: str):
         j = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
         conn.close()
         running = draft.is_running(job_id)
-        cols = st.columns([4, 1, 1])
+        cols = st.columns([5, 1])
         with cols[0]:
             st.progress(j["done"] / max(j["total"], 1), text=f"{j['done']:,} of {j['total']:,} rows drafted"
                         + (" — drafting..." if running else ""))
-        cost = draft.job_cost(j)
-        cols[1].metric("Model cost", f"${cost:,.2f}" if cost is not None else "—",
-                       help="At Anthropic list prices; Matcha billing may differ.")
-        with cols[2]:
+        with cols[1]:
             if running:
                 if st.button("Stop", width="stretch"):
                     draft.stop_job(job_id)
