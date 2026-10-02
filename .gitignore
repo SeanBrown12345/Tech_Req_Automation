@@ -6,3 +6,5 @@ data/
 Worksheets/
 # Downloaded embedding model files
 models/
+# Local secrets (Matcha token etc.)
+.env

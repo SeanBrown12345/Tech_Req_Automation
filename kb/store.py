@@ -121,6 +121,15 @@ def replace_source(conn: sqlite3.Connection, profile: Profile, records: list[Rec
               " ".join(filter(None, [r.category, r.subcategory, r.section]))) for r in records])
 
 
+def delete_source(conn: sqlite3.Connection, source_id: str) -> None:
+    with conn:
+        conn.execute(
+            "DELETE FROM records_fts WHERE record_id IN (SELECT record_id FROM records WHERE source_id = ?)",
+            (source_id,))
+        conn.execute("DELETE FROM records WHERE source_id = ?", (source_id,))
+        conn.execute("DELETE FROM sources WHERE source_id = ?", (source_id,))
+
+
 def embed_missing(conn: sqlite3.Connection, embedder: Embedder) -> int:
     """Embed every record text that has no cached vector for this model. Returns how many were added."""
     rows = conn.execute(
@@ -139,32 +148,36 @@ def embed_missing(conn: sqlite3.Connection, embedder: Embedder) -> int:
     return len(unique)
 
 
-def _keyword_ids(conn: sqlite3.Connection, query: str, limit: int, status: str | None) -> list[str]:
+def _filter_sql(filters: dict | None) -> tuple[str, list]:
+    """AND-clauses over records r / sources s for {"statuses": [...], "clients": [...], "modules": [...]}."""
+    clauses, params = [], []
+    for key, column in (("statuses", "r.status"), ("clients", "s.client"), ("modules", "r.module")):
+        values = (filters or {}).get(key)
+        if values:
+            clauses.append(f"{column} IN ({','.join('?' * len(values))})")
+            params.extend(values)
+    return "".join(f" AND {c}" for c in clauses), params
+
+
+def _keyword_ids(conn: sqlite3.Connection, query: str, limit: int, filters: dict | None) -> list[str]:
     # Quote each term so user text can't be parsed as FTS syntax; OR them so partial matches still rank.
     terms = [t.replace('"', "") for t in query.split() if t.strip('"')]
     if not terms:
         return []
     match = " OR ".join(f'"{t}"' for t in terms)
-    sql = ("SELECT r.record_id FROM records_fts JOIN records r USING (record_id)"
-           " WHERE records_fts MATCH ?")
-    params: list = [match]
-    if status:
-        sql += " AND r.status = ?"
-        params.append(status)
-    sql += " ORDER BY bm25(records_fts, 0, 4.0, 2.0, 1.0, 1.0) LIMIT ?"
-    params.append(limit)
-    return [row[0] for row in conn.execute(sql, params)]
+    where, params = _filter_sql(filters)
+    sql = ("SELECT r.record_id FROM records_fts JOIN records r USING (record_id) JOIN sources s USING (source_id)"
+           f" WHERE records_fts MATCH ?{where}"
+           " ORDER BY bm25(records_fts, 0, 4.0, 2.0, 1.0, 1.0) LIMIT ?")
+    return [row[0] for row in conn.execute(sql, [match, *params, limit])]
 
 
 def _semantic_ids(conn: sqlite3.Connection, query: str, embedder: Embedder, limit: int,
-                  status: str | None) -> tuple[list[str], dict[str, float]]:
-    sql = ("SELECT r.record_id, e.vector FROM records r"
-           " JOIN embeddings e ON e.model = ? AND e.text_sha = r.embed_sha")
-    params: list = [embedder.model_name]
-    if status:
-        sql += " WHERE r.status = ?"
-        params.append(status)
-    rows = conn.execute(sql, params).fetchall()
+                  filters: dict | None) -> tuple[list[str], dict[str, float]]:
+    where, params = _filter_sql(filters)
+    sql = ("SELECT r.record_id, e.vector FROM records r JOIN sources s USING (source_id)"
+           f" JOIN embeddings e ON e.model = ? AND e.text_sha = r.embed_sha WHERE 1=1{where}")
+    rows = conn.execute(sql, [embedder.model_name, *params]).fetchall()
     if not rows:
         return [], {}
     # Brute-force cosine similarity: fine for tens of thousands of rows. Replace with
@@ -176,20 +189,27 @@ def _semantic_ids(conn: sqlite3.Connection, query: str, embedder: Embedder, limi
 
 
 def search(conn: sqlite3.Connection, query: str, limit: int = 10, status: str | None = None,
-           mode: str = "hybrid", embedder: Embedder | None = None, candidates: int = 50) -> list[dict]:
+           mode: str = "hybrid", embedder: Embedder | None = None, candidates: int = 50,
+           filters: dict | None = None) -> list[dict]:
     """Find past records similar to `query`.
+
+    filters: {"statuses": [...], "clients": [...], "modules": [...]}; `status` is shorthand
+    for a single status.
 
     mode: "keyword" (FTS5/BM25), "semantic" (embeddings), or "hybrid" (both, merged with
     reciprocal rank fusion so neither score scale dominates). Each result carries its cosine
     `similarity` (when semantic search ran) and `found_by`, the methods that returned it.
     """
+    filters = dict(filters or {})
+    if status:
+        filters["statuses"] = [status]
     keyword: list[str] = []
     semantic: list[str] = []
     sims: dict[str, float] = {}
     if mode in ("keyword", "hybrid"):
-        keyword = _keyword_ids(conn, query, candidates, status)
+        keyword = _keyword_ids(conn, query, candidates, filters)
     if mode in ("semantic", "hybrid"):
-        semantic, sims = _semantic_ids(conn, query, embedder or Embedder(), candidates, status)
+        semantic, sims = _semantic_ids(conn, query, embedder or Embedder(), candidates, filters)
 
     fused: dict[str, float] = {}
     for ranked in (keyword, semantic):

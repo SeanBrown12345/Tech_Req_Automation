@@ -5,23 +5,27 @@ import json
 import sys
 from pathlib import Path
 
-from kb import store
+from kb import settings, store
 from kb.embed import Embedder
 from kb.extract import extract_profile
 from kb.profile import load_profile, load_scales
 
-ROOT = Path(__file__).resolve().parent.parent
-CONFIG = ROOT / "config"
-DEFAULT_DB = ROOT / "data" / "kb.sqlite"
+DEFAULT_DB = settings.DB_PATH
+
+
+def _base_dir(path: Path) -> Path:
+    """Dashboard-created profiles reference workbooks relative to the data dir."""
+    return settings.DATA_DIR if path.resolve().is_relative_to(settings.DATA_PROFILES_DIR.resolve()) else settings.ROOT
 
 
 def cmd_ingest(args, conn):
-    scales = load_scales(CONFIG / "scales.yaml")
-    paths = [Path(p) for p in args.profiles] or sorted((CONFIG / "profiles").glob("*.yaml"))
+    scales = load_scales(settings.SCALES_FILE)
+    locations = ([(Path(p), _base_dir(Path(p))) for p in args.profiles] if args.profiles
+                 else settings.profile_locations())
     failed = False
-    for path in paths:
+    for path, base in locations:
         try:
-            profile = load_profile(path, scales, ROOT)
+            profile = load_profile(path, scales, base)
             records, reports = extract_profile(profile)
         except Exception as exc:  # report and keep loading the other workbooks
             print(f"\n[FAIL] {path.name}: {exc}")

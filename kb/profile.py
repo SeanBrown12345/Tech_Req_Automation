@@ -74,17 +74,18 @@ class Profile:
     sheets: list[SheetProfile] = field(default_factory=list)
 
 
+def _parse_scale(name: str, spec: dict, where: str) -> Scale:
+    values = {}
+    for response, status in (spec.get("values") or {}).items():
+        if status is not None and status not in STATUSES:
+            raise ValueError(f"{where}: scale '{name}' maps {response!r} to unknown status {status!r}")
+        values[normalize_value(response)] = status
+    return Scale(name, spec.get("description", ""), values)
+
+
 def load_scales(path: Path) -> dict[str, Scale]:
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    scales = {}
-    for name, spec in raw.items():
-        values = {}
-        for response, status in (spec.get("values") or {}).items():
-            if status is not None and status not in STATUSES:
-                raise ValueError(f"{path}: scale '{name}' maps {response!r} to unknown status {status!r}")
-            values[normalize_value(response)] = status
-        scales[name] = Scale(name, spec.get("description", ""), values)
-    return scales
+    return {name: _parse_scale(name, spec, str(path)) for name, spec in raw.items()}
 
 
 def _parse_signals(specs: list[dict], scales: dict[str, Scale], where: str) -> list[Signal]:
@@ -102,25 +103,34 @@ def _parse_signals(specs: list[dict], scales: dict[str, Scale], where: str) -> l
                 marks[col_index(letter)] = status
             signals.append(Signal(name, marks=marks, refines=refines))
         elif "column" in spec:
-            scale_name = spec.get("scale")
-            if scale_name not in scales:
-                raise ValueError(f"{where}: unknown scale {scale_name!r}")
-            signals.append(Signal(name, column=col_index(spec["column"]), scale=scales[scale_name],
-                                  refines=refines))
+            if "values" in spec:  # scale defined inline (profiles created in the dashboard)
+                scale = _parse_scale(f"{where}:{name}", {"values": spec["values"]}, where)
+            elif spec.get("scale") in scales:
+                scale = scales[spec["scale"]]
+            else:
+                raise ValueError(f"{where}: unknown scale {spec.get('scale')!r}")
+            signals.append(Signal(name, column=col_index(spec["column"]), scale=scale, refines=refines))
         else:
-            raise ValueError(f"{where}: answer entry needs 'column' + 'scale' or 'marks': {spec}")
+            raise ValueError(f"{where}: answer entry needs 'column' + 'scale'/'values', or 'marks': {spec}")
     return signals
 
 
 def load_profile(path: Path, scales: dict[str, Scale], root: Path) -> Profile:
+    """Load a profile file. Its `file` is resolved against `root`."""
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    where = str(path)
+    return parse_profile(raw, path.stem, scales, root, path)
+
+
+def parse_profile(raw: dict, source_id: str, scales: dict[str, Scale], root: Path,
+                  path: Path | None = None) -> Profile:
+    """Build a Profile from its dict form (the YAML structure)."""
+    where = str(path or source_id)
     file = root / raw["file"]
     if not file.exists():
         raise FileNotFoundError(f"{where}: workbook not found: {file}")
 
     defaults = raw.get("defaults") or {}
-    profile = Profile(source_id=path.stem, path=path, file=file, source=raw.get("source") or {})
+    profile = Profile(source_id=source_id, path=path or Path(source_id), file=file, source=raw.get("source") or {})
 
     for sheet in raw["sheets"]:
         spec = {**defaults, **sheet}
