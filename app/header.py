@@ -44,12 +44,15 @@ section[data-testid="stSidebar"] {{ top: {BANNER_HEIGHT}; height: calc(100vh - {
 [data-testid="stElementContainer"]:has(.app-top-banner) {{ position: absolute; height: 0; margin: 0; }}
 /* Gear: a real Streamlit page link (no page reload), pinned into the banner's right side. */
 .st-key-reqfill-gear {{
-    position: fixed; top: calc(({BANNER_HEIGHT} - 2.25rem) / 2); right: 1rem; z-index: 1000061;
-    width: auto; gap: 0;
+    position: fixed; top: 0; right: 1rem; z-index: 1000061; width: auto; gap: 0;
 }}
+.st-key-reqfill-gear [data-testid="stElementContainer"], .st-key-reqfill-gear [data-testid="stPageLink"] {{
+    margin: 0; padding: 0;
+}}
+/* Full banner height with the icon centred in it, so it lines up with the logo and title. */
 .st-key-reqfill-gear a {{
-    width: 2.25rem; height: 2.25rem; padding: 0; justify-content: center; border-radius: 6px;
-    background: transparent;
+    width: 2.25rem; height: {BANNER_HEIGHT}; min-height: 0; margin: 0; padding: 0;
+    align-items: center; justify-content: center; background: transparent;
 }}
 .st-key-reqfill-gear a:hover, .st-key-reqfill-gear a:focus {{ background: transparent !important; }}
 .st-key-reqfill-gear a span, .st-key-reqfill-gear a svg {{
