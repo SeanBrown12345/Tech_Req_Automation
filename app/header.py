@@ -70,8 +70,9 @@ section[data-testid="stSidebar"] {{ top: {BANNER_HEIGHT}; height: calc(100vh - {
 """
 
 
-def render_header(home_page, admin_page) -> None:
-    """Draw the banner; the logo links to `home_page` and the gear to `admin_page` (st.Page objects)."""
+def render_header(home_page, admin_page, in_admin: bool = False) -> None:
+    """Draw the banner; the logo links to `home_page` and the gear to `admin_page` (st.Page objects).
+    On the admin pages the gear becomes a back arrow to `home_page`."""
     st.html(
         _CSS
         + f'<div class="app-top-banner"><span class="app-top-logo" role="img" aria-label="Cayenta"></span>'
@@ -81,5 +82,9 @@ def render_header(home_page, admin_page) -> None:
     with st.container(key="reqfill-home"):
         st.page_link(home_page, label="Home", help="Back to drafting")
     with st.container(key="reqfill-gear"):
-        st.page_link(admin_page, label="Knowledge base admin", icon=":material/settings:",
-                     help="Knowledge base admin: overview, search, add worksheets")
+        if in_admin:
+            st.page_link(home_page, label="Back to drafting", icon=":material/arrow_back:",
+                         help="Back to drafting")
+        else:
+            st.page_link(admin_page, label="Knowledge base admin", icon=":material/settings:",
+                         help="Knowledge base admin: overview, search, add worksheets")

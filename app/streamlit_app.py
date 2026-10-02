@@ -22,10 +22,11 @@ admin = [
     st.Page(views / "add_worksheet.py", title="Add worksheet", icon=":material/upload_file:", url_path="add_worksheet"),
 ]
 page = st.navigation([draft, *admin], position="hidden")
-render_header(draft, admin[0])
+in_admin = page.url_path in {p.url_path for p in admin}
+render_header(draft, admin[0], in_admin)
 
 # Only the admin pages get a sidebar.
-if page.url_path in {p.url_path for p in admin}:
+if in_admin:
     with st.sidebar:
         st.caption("KNOWLEDGE BASE ADMIN")
         for p in admin:
