@@ -84,11 +84,9 @@ def render_header(home_page, admin_page, in_admin: bool = False) -> None:
         f'<span class="app-top-title">{APP_NAME}</span></div>'
     )
     with st.container(key="reqfill-home"):
-        st.page_link(home_page, label="Home", help="Back to drafting")
+        st.page_link(home_page, label="Home")
     with st.container(key="reqfill-gear"):
         if in_admin:
-            st.page_link(home_page, label="Back to drafting", icon=":material/arrow_back:",
-                         help="Back to drafting")
+            st.page_link(home_page, label="Back to drafting", icon=":material/arrow_back:")
         else:
-            st.page_link(admin_page, label="Knowledge base admin", icon=":material/settings:",
-                         help="Knowledge base admin: overview, search, add worksheets")
+            st.page_link(admin_page, label="Knowledge base admin", icon=":material/settings:")
