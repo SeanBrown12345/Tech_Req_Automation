@@ -1,5 +1,5 @@
 """Settings-style layout for the knowledge-base admin pages (modelled on GitHub's settings):
-a page header, then an always-visible section list on the left and the page content on the right."""
+an always-visible section list on the left and the page content on the right."""
 
 import streamlit as st
 
@@ -7,10 +7,6 @@ ACCENT = "#8B1538"
 
 _CSS = f"""
 <style>
-.admin-head {{ padding: 0.25rem 0 1rem; border-bottom: 1px solid rgba(128, 128, 128, 0.25); }}
-.admin-head-title {{ font-size: 1.5rem; font-weight: 600; line-height: 1.3; }}
-.admin-head-sub {{ font-size: 0.9rem; opacity: 0.65; margin-top: 0.2rem; }}
-
 /* Section list */
 .st-key-admin-nav {{ gap: 0.1rem; }}
 .st-key-admin-nav [data-testid="stCaptionContainer"] {{
@@ -41,9 +37,8 @@ _CSS = f"""
 
 
 def admin_layout(pages: list, current) -> st.delta_generator.DeltaGenerator:
-    """Draw the admin header and section list; return the container the current page renders into."""
-    st.html(_CSS + '<div class="admin-head"><div class="admin-head-title">Knowledge base admin</div>'
-            '<div class="admin-head-sub">Manage the past answers ReqFill drafts from.</div></div>')
+    """Draw the section list; return the container the current page renders into."""
+    st.html(_CSS)
     nav, content = st.columns([1, 4], gap="large")
     with nav.container(key="admin-nav"):
         st.caption("KNOWLEDGE BASE")
