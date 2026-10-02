@@ -51,8 +51,12 @@ section[data-testid="stSidebar"] {{ top: {BANNER_HEIGHT}; height: calc(100vh - {
     width: 2.25rem; height: 2.25rem; padding: 0; justify-content: center; border-radius: 6px;
     background: transparent;
 }}
-.st-key-reqfill-gear a:hover {{ background: rgba(255, 255, 255, 0.15); }}
-.st-key-reqfill-gear a span, .st-key-reqfill-gear a svg {{ color: #fff !important; fill: #fff; font-size: 1.35rem; }}
+.st-key-reqfill-gear a:hover, .st-key-reqfill-gear a:focus {{ background: transparent !important; }}
+.st-key-reqfill-gear a span, .st-key-reqfill-gear a svg {{
+    color: #fff !important; fill: #fff; font-size: 1.35rem; transition: color 0.15s;
+}}
+/* Hover: the icon itself shifts to a soft pink instead of a background highlight. */
+.st-key-reqfill-gear a:hover span, .st-key-reqfill-gear a:hover svg {{ color: #F2C4D2 !important; fill: #F2C4D2; }}
 .st-key-reqfill-gear a p {{ display: none; }}
 /* Home link: an invisible page link laid exactly over the logo. */
 .st-key-reqfill-home {{
