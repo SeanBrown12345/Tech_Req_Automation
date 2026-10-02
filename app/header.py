@@ -35,8 +35,10 @@ _CSS = f"""
 .app-top-title {{
     font-size: 1.15rem; font-weight: 600; letter-spacing: 0.01em; color: #fff; white-space: nowrap;
 }}
-/* Make room for the banner: push Streamlit's toolbar, sidebar and page content below it. */
-header[data-testid="stHeader"] {{ top: {BANNER_HEIGHT}; }}
+/* Make room for the banner: push the sidebar and page content below it. Streamlit's own toolbar
+   strip is empty (toolbarMode = "minimal"), so hide it and reclaim its space. */
+header[data-testid="stHeader"] {{ display: none; }}
+[data-testid="stMainBlockContainer"] {{ padding-top: 2.5rem; }}
 section[data-testid="stSidebar"] {{ top: {BANNER_HEIGHT}; height: calc(100vh - {BANNER_HEIGHT}) !important; }}
 [data-testid="stAppViewContainer"] > .stMain,
 [data-testid="stAppViewContainer"] > section.main {{ margin-top: {BANNER_HEIGHT}; }}

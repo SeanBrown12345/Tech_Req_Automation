@@ -4,5 +4,8 @@ primaryColor = "#2a78d6"
 [server]
 maxUploadSize = 50   # MB
 
+[client]
+toolbarMode = "minimal"   # no Deploy button or developer menu
+
 [browser]
 gatherUsageStats = false
