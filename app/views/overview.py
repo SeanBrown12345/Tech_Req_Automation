@@ -39,7 +39,8 @@ with left:
     )
     chart = (bar.mark_bar(color="#3987e5" if dark else "#2a78d6", cornerRadiusEnd=4, height={"band": 0.7})
              + bar.mark_text(align="left", dx=4).encode(text=alt.Text("records:Q", format=",")))
-    st.altair_chart(chart.properties(height=36 * len(counts) + 40), width="stretch")
+    # Right padding keeps the value label on the longest bar from being clipped.
+    st.altair_chart(chart.properties(height=36 * len(counts) + 40, padding={"right": 40}), width="stretch")
     with st.expander("Show as table"):
         st.dataframe(counts[["label", "records", "share"]], hide_index=True, column_config={
             "label": "Status", "records": st.column_config.NumberColumn("Requirements", format="%d"),

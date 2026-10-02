@@ -1,4 +1,4 @@
-"""Requirements Knowledge Base dashboard. Run: streamlit run app/streamlit_app.py"""
+"""ReqFill dashboard. Run: streamlit run app/streamlit_app.py"""
 
 import sys
 from pathlib import Path
@@ -9,7 +9,10 @@ if str(ROOT) not in sys.path:
 
 import streamlit as st  # noqa: E402
 
-st.set_page_config(page_title="Requirements Knowledge Base", page_icon=":material/fact_check:", layout="wide")
+from app.header import APP_NAME, render_header  # noqa: E402
+
+st.set_page_config(page_title=APP_NAME, page_icon=":material/fact_check:", layout="wide")
+render_header()
 
 views = Path(__file__).parent / "views"
 page = st.navigation([

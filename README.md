@@ -1,4 +1,6 @@
-# Tech_Req_Automation
+# ReqFill
+
+Fills RFP functional/technical requirements worksheets from our past answers.
 
 Knowledge base of past functional/technical requirements worksheet responses, used to draft answers for new RFPs.
 
