@@ -12,13 +12,26 @@ import streamlit as st  # noqa: E402
 from app.header import APP_NAME, render_header  # noqa: E402
 
 st.set_page_config(page_title=APP_NAME, page_icon=":material/fact_check:", layout="wide")
-render_header()
 
 views = Path(__file__).parent / "views"
-page = st.navigation([
-    st.Page(views / "overview.py", title="Overview", icon=":material/dashboard:", default=True),
-    st.Page(views / "search.py", title="Search", icon=":material/search:"),
-    st.Page(views / "draft_worksheet.py", title="Draft a worksheet", icon=":material/edit_note:"),
-    st.Page(views / "add_worksheet.py", title="Add worksheet", icon=":material/upload_file:"),
-])
+draft = st.Page(views / "draft_worksheet.py", title="Draft a worksheet", icon=":material/edit_note:", default=True)
+# Knowledge-base admin, reached from the gear in the header.
+admin = [
+    st.Page(views / "overview.py", title="Overview", icon=":material/dashboard:", url_path="overview"),
+    st.Page(views / "search.py", title="Search", icon=":material/search:", url_path="search"),
+    st.Page(views / "add_worksheet.py", title="Add worksheet", icon=":material/upload_file:", url_path="add_worksheet"),
+]
+page = st.navigation([draft, *admin], position="hidden")
+render_header(admin[0])
+
+with st.sidebar:
+    if page.url_path in {p.url_path for p in admin}:
+        st.caption("KNOWLEDGE BASE ADMIN")
+        for p in admin:
+            st.page_link(p)
+        st.divider()
+        st.page_link(draft, label="Back to drafting", icon=":material/arrow_back:")
+    else:
+        st.page_link(draft)
+
 page.run()

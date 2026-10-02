@@ -11,6 +11,9 @@ pip install -r requirements.txt
 streamlit run app/streamlit_app.py
 ```
 
+The app opens on **Draft a worksheet**. The gear icon in the header opens the knowledge-base admin pages
+(Overview, Search, Add worksheet).
+
 - **Overview** - totals, answers by status and module, loaded worksheets, and *conflicting answers*
   (near-identical requirements answered differently in different RFPs).
 - **Search** - paste a requirement to find how we've answered similar ones (hybrid / semantic / keyword),

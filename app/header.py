@@ -1,4 +1,5 @@
-"""Top banner shared with our other apps: company logo, separator, app name."""
+"""Top banner shared with our other apps: company logo, separator, app name, and a gear that opens
+the knowledge-base admin pages."""
 
 import base64
 from pathlib import Path
@@ -41,14 +42,30 @@ section[data-testid="stSidebar"] {{ top: {BANNER_HEIGHT}; height: calc(100vh - {
 [data-testid="stAppViewContainer"] > section.main {{ margin-top: {BANNER_HEIGHT}; }}
 /* The banner is fixed, so its own (empty) slot in the page flow shouldn't take space. */
 [data-testid="stElementContainer"]:has(.app-top-banner) {{ position: absolute; height: 0; margin: 0; }}
+/* Gear: a real Streamlit page link (no page reload), pinned into the banner's right side. */
+.st-key-reqfill-gear {{
+    position: fixed; top: calc(({BANNER_HEIGHT} - 2.25rem) / 2); right: 1rem; z-index: 1000061;
+    width: auto; gap: 0;
+}}
+.st-key-reqfill-gear a {{
+    width: 2.25rem; height: 2.25rem; padding: 0; justify-content: center; border-radius: 6px;
+    background: transparent;
+}}
+.st-key-reqfill-gear a:hover {{ background: rgba(255, 255, 255, 0.15); }}
+.st-key-reqfill-gear a span, .st-key-reqfill-gear a svg {{ color: #fff !important; fill: #fff; font-size: 1.35rem; }}
+.st-key-reqfill-gear a p {{ display: none; }}
 </style>
 """
 
 
-def render_header() -> None:
+def render_header(admin_page) -> None:
+    """Draw the banner; the gear links to `admin_page` (an st.Page)."""
     st.html(
         _CSS
         + f'<div class="app-top-banner"><span class="app-top-logo" role="img" aria-label="Cayenta"></span>'
         '<span class="banner-sep"></span>'
         f'<span class="app-top-title">{APP_NAME}</span></div>'
     )
+    with st.container(key="reqfill-gear"):
+        st.page_link(admin_page, label="Knowledge base admin", icon=":material/settings:",
+                     help="Knowledge base admin: overview, search, add worksheets")
