@@ -1,0 +1,16 @@
+file: "Worksheets/Functional - Vero_Beach (ERP ONLY).XLSX"
+source:
+  client: City of Vero Beach
+  rfp: ERP
+  worksheet: Attachment 7 - Functional Requirements
+  submitted: 2026-01-22
+  products: [Cayenta ERP]
+
+sheets:
+  - name: Sheet1
+    module: ERP
+    header_row: 13
+    columns: {req_id: A, category: B, subcategory: C, requirement: D, comment: G}
+    answer:
+      - {name: implementation, column: E, scale: implementation_ynd}
+      - {name: support, column: F, scale: support_s_tps_ns}

@@ -1,0 +1,32 @@
+file: "Worksheets/UWU Vendor Requirements - Cayenta (1).xlsx"
+source:
+  client: UWU                # TODO: full client name
+  rfp: CIS & ERP Vendor Requirements
+  worksheet: Vendor Requirements
+  submitted: 2026-02-10
+  products: [Cayenta CIS, Cayenta ERP, SmartWorks Compass MDM]
+
+# Every tab shares one layout: the answer is a letter placed in the S/P/F/C/T/N column.
+defaults:
+  header_row: 5
+  columns: {req_id: B, requirement: C, comment: J}
+  answer:
+    - name: indicator
+      marks: {D: STANDARD, E: PARTIAL, F: FUTURE, G: CUSTOM, H: THIRD_PARTY, I: NOT_SUPPORTED}
+
+sheets:
+  - {name: GT, module: General & Technical}
+  - {name: Billing, module: CIS}
+  - {name: CIS, module: CIS}
+  - {name: Customer Portal, module: CEP}
+  - {name: Cashiering, module: CIS}
+  - {name: MDMS (Optional), module: MDM, header_row: 6}
+  - {name: Payment Processing, module: CIS}
+  - {name: AFM, module: ERP, header_row: 6}
+  - {name: GL & Fin Rpt, module: ERP}
+  - {name: Chart of Accounts, module: ERP}
+  - {name: Payroll, module: ERP}
+  - {name: Purchasing, module: ERP}
+  - {name: Accounts Receivable, module: ERP}
+  - {name: Capital Asset Accounting, module: ERP}
+  - {name: Budget Management, module: ERP}

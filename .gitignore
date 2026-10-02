@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+# Generated knowledge base (rebuild with `python -m kb ingest`)
+data/
+# Client worksheets contain proposal content; keep them out of the repo
+Worksheets/

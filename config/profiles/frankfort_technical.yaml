@@ -1,0 +1,16 @@
+file: "Worksheets/03. Worksheet B – Technical Requirements – Frankfort Plant Board – Cayenta (1).xlsx"
+source:
+  client: Frankfort Plant Board
+  rfp: CIS & ERP Replacement
+  worksheet: Worksheet B - Technical Requirements (SaaS)
+  submitted: 2026-01-30
+  products: [Cayenta CIS, Cayenta ERP]
+
+sheets:
+  - name: SaaS
+    module: Technical
+    header_row: 6
+    columns: {req_id: B, category: C, requirement: E, comment: G}
+    attributes: {response_type: D}     # Requirement vs Narrative
+    answer:
+      - {name: vendor_response, column: F, scale: wcg_technical_4}

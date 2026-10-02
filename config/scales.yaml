@@ -1,0 +1,45 @@
+# Scale maps: each worksheet response vocabulary -> internal status (see kb/statuses.py).
+# Matching ignores case, extra spaces, and curly-vs-straight quotes/dashes.
+# Map a value to null when it's a known response that carries no status information.
+
+wcg_numeric_5:
+  description: WCG-style 1-5 dropdown (Frankfort Worksheet A)
+  values:
+    "1 - Current Functionality": STANDARD
+    "2 - Scheduled Release": SCHEDULED
+    "3 - Future Release": FUTURE
+    "4 - Modification Required": CUSTOM
+    "5 - Cannot Meet Req't": NOT_SUPPORTED
+
+wcg_technical_4:
+  description: Technical worksheet dropdown (Frankfort Worksheet B)
+  values:
+    "Base Functionality - Proposed Version": STANDARD
+    "Base Functionality - Upcoming Version": SCHEDULED
+    "New Modification Required": CUSTOM
+    "Cannot Meet Req't": NOT_SUPPORTED
+
+implementation_ynd:
+  description: "Column E 'Implementation Response' (Dayton, Vero Beach)"
+  values:
+    "Y": STANDARD          # met with standard GA features
+    "Y-ND": CUSTOM         # met, but not GA / requires custom development
+    "N": NOT_SUPPORTED
+    "I": NEEDS_DISCUSSION
+
+support_s_tps_ns:
+  description: "Column F 'Support Response' (Dayton, Vero Beach) - refines column E"
+  values:
+    "S": null              # supported by software developer: no extra information
+    "TPS": THIRD_PARTY
+    "NS": NOT_SUPPORTED
+
+feature_availability:
+  description: Bentonville 'Feature Availability Status' - refines a plain 'Comply' (see profile)
+  values:
+    "Production": STANDARD
+    "Roadmap Item": FUTURE
+    "Testing": FUTURE
+    "Pilot": FUTURE
+    "Other": null
+    "N/A": null

@@ -1,0 +1,18 @@
+file: "Worksheets/02. Worksheet A – Functional Requirements – Frankfort Plant Board – Cayenta (1).xlsx"
+source:
+  client: Frankfort Plant Board
+  rfp: CIS & ERP Replacement
+  worksheet: Worksheet A - Functional Requirements
+  submitted: 2026-01-30
+  products: [Cayenta CIS, Cayenta ERP]
+
+defaults:
+  header_row: 6
+  columns: {req_id: B, category: C, subcategory: D, requirement: E, comment: G}
+  answer:
+    - {name: vendor_response, column: F, scale: wcg_numeric_5}
+
+sheets:
+  - {name: CIS Functional Reqs, module: CIS}
+  - {name: ERP Functional Reqs, module: ERP}
+  - {name: MDM Reqs, module: MDM}

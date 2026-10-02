@@ -1,0 +1,25 @@
+file: "Worksheets/Functional - Bentonville (CIS , CEP, EBPP).xlsx"
+source:
+  client: City of Bentonville
+  rfp: CIS, CEP, EBPP
+  worksheet: Appendix C - CIS Functional and Integration Requirements
+  submitted: 2026-01-16
+  products: [Cayenta CIS, Cayenta CEP, EBPP]
+
+sheets:
+  - name: CIS
+    module: CIS
+    header_row: 4
+    first_data_row: 7          # rows 5-6 describe the accepted answers
+    columns: {req_id: A, requirement: B, comment: M}
+    attributes:
+      supported_by: E
+      integration_type: F
+      additional_module_required: G
+      included_in_base: K
+      additional_cost: L
+    answer:
+      - name: compliance
+        marks: {H: SUPPORTED, I: PARTIAL, J: NOT_SUPPORTED}
+      # Only sharpens 'Comply' (SUPPORTED): Comply + Production = STANDARD, Comply + Roadmap = FUTURE.
+      - {name: availability, column: D, scale: feature_availability, refines: [SUPPORTED]}

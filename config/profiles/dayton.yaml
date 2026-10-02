@@ -1,0 +1,17 @@
+file: "Worksheets/Functional - Dayton (CIS, CEP).xlsx"
+source:
+  client: City of Dayton
+  rfp: Utility Billing (CIS, CEP)
+  worksheet: Attachment 7 - Utility Billing Functional Requirements
+  submitted: 2026-03-02
+  products: [Cayenta CIS, Cayenta CEP]
+
+sheets:
+  - name: UB Functional Requirements
+    module: CIS
+    header_row: 14
+    columns: {req_id: A, category: B, subcategory: C, requirement: D, comment: H}
+    attributes: {module_system: G}
+    answer:
+      - {name: implementation, column: E, scale: implementation_ynd}
+      - {name: support, column: F, scale: support_s_tps_ns}
