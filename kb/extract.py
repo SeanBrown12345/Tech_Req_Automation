@@ -85,17 +85,13 @@ def _evaluate(sheet: SheetProfile, row: tuple, header: tuple, report: SheetRepor
     return status, raw, warnings
 
 
-def extract_sheet(profile: Profile, sheet: SheetProfile, ws) -> tuple[list[Record], SheetReport]:
-    report = SheetReport(sheet.name)
-    records: list[Record] = []
+def iter_requirements(rows, first_row: int, cols: dict[str, int], header_requirement: str | None):
+    """Yield (row_num, row, req_id, requirement, section, parent_text) for each requirement row.
 
-    header = next(ws.iter_rows(min_row=sheet.header_row, max_row=sheet.header_row, values_only=True), ())
-    cols = sheet.columns
-    header_requirement = clean(header[cols["requirement"]]) if cols["requirement"] < len(header) else None
-    if not header_requirement:
-        raise ValueError(f"{profile.path}: sheet {sheet.name!r} row {sheet.header_row} has no header "
-                         "in the requirement column - check header_row / columns")
-
+    Tracks the context a row only makes sense in: the current section heading, and the parent
+    requirement for list children ("a) Land" under "...the following categories of assets:",
+    "5.1a" under "5.1").
+    """
     def cell(row, role):
         idx = cols.get(role)
         return clean(row[idx]) if idx is not None and idx < len(row) else None
@@ -104,8 +100,7 @@ def extract_sheet(profile: Profile, sheet: SheetProfile, ws) -> tuple[list[Recor
     text_by_id: dict[str, str] = {}  # req_id -> requirement text, for hierarchical parents
     lead_in: str | None = None
 
-    for row_num, row in enumerate(ws.iter_rows(min_row=sheet.first_data_row, values_only=True),
-                                  start=sheet.first_data_row):
+    for row_num, row in enumerate(rows, start=first_row):
         requirement = cell(row, "requirement")
         req_id = cell(row, "req_id")
 
@@ -122,12 +117,6 @@ def extract_sheet(profile: Profile, sheet: SheetProfile, ws) -> tuple[list[Recor
         if req_id:
             text_by_id[req_id] = requirement
 
-        status, raw, warnings = _evaluate(sheet, row, header, report)
-        comment = cell(row, "comment")
-        if status is None and comment and not warnings:
-            status = "NARRATIVE"
-
-        # Work out the parent this row only makes sense under.
         parent = None
         m = _CHILD_ID.match(req_id or "")
         if m and m.group("parent") in text_by_id:
@@ -138,6 +127,32 @@ def extract_sheet(profile: Profile, sheet: SheetProfile, ws) -> tuple[list[Recor
             lead_in = None
         if _LEAD_IN.search(requirement):
             lead_in = requirement
+
+        yield row_num, row, req_id, requirement, section, parent
+
+
+def extract_sheet(profile: Profile, sheet: SheetProfile, ws) -> tuple[list[Record], SheetReport]:
+    report = SheetReport(sheet.name)
+    records: list[Record] = []
+
+    header = next(ws.iter_rows(min_row=sheet.header_row, max_row=sheet.header_row, values_only=True), ())
+    cols = sheet.columns
+    header_requirement = clean(header[cols["requirement"]]) if cols["requirement"] < len(header) else None
+    if not header_requirement:
+        raise ValueError(f"{profile.path}: sheet {sheet.name!r} row {sheet.header_row} has no header "
+                         "in the requirement column - check header_row / columns")
+
+    def cell(row, role):
+        idx = cols.get(role)
+        return clean(row[idx]) if idx is not None and idx < len(row) else None
+
+    for row_num, row, req_id, requirement, section, parent in iter_requirements(
+            ws.iter_rows(min_row=sheet.first_data_row, values_only=True), sheet.first_data_row, cols,
+            header_requirement):
+        status, raw, warnings = _evaluate(sheet, row, header, report)
+        comment = cell(row, "comment")
+        if status is None and comment and not warnings:
+            status = "NARRATIVE"
 
         if not raw and not comment:
             report.skipped_unanswered += 1

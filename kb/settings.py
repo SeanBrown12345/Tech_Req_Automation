@@ -20,6 +20,8 @@ DATA_DIR = Path(os.environ.get("KB_DATA_DIR", ROOT / "data"))
 DB_PATH = DATA_DIR / "kb.sqlite"
 UPLOADS_DIR = DATA_DIR / "workbooks"          # workbooks uploaded through the dashboard
 DATA_PROFILES_DIR = DATA_DIR / "profiles"     # profiles created in the dashboard; `file` relative to DATA_DIR
+DRAFTS_DB_PATH = DATA_DIR / "drafts.sqlite"   # drafting jobs: user work, kept apart from the rebuildable KB
+DRAFTS_DIR = DATA_DIR / "drafts"              # the uploaded blank workbook for each drafting job
 
 
 def profile_locations() -> list[tuple[Path, Path]]:

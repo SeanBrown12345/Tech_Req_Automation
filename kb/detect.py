@@ -102,12 +102,18 @@ def _header_score(row: tuple) -> float:
     return hits + 0.1 * min(len(texts), 10) if hits >= 2 else 0
 
 
-def guess_sheet(name: str, rows: list[tuple]) -> SheetGuess | None:
-    """Guess the layout of one sheet from its rows (values only). None if no header row is found."""
-    scores = [(_header_score(r), i) for i, r in enumerate(rows[:HEADER_SCAN_ROWS])]
-    best, header_idx = max(scores, default=(0, 0))
-    if best == 0:
-        return None
+def guess_sheet(name: str, rows: list[tuple], header_row: int | None = None) -> SheetGuess | None:
+    """Guess the layout of one sheet from its rows (values only). None if no header row is found.
+    Pass `header_row` (1-based) to skip header detection and use that row."""
+    if header_row:
+        if header_row > len(rows):
+            return None
+        header_idx = header_row - 1
+    else:
+        scores = [(_header_score(r), i) for i, r in enumerate(rows[:HEADER_SCAN_ROWS])]
+        best, header_idx = max(scores, default=(0, 0))
+        if best == 0:
+            return None
     header = rows[header_idx]
     headers = {get_column_letter(i + 1): str(v).strip() for i, v in enumerate(header) if clean(v)}
     data = [r for r in rows[header_idx + 1: header_idx + 1 + SAMPLE_ROWS] if any(clean(v) for v in r)]
@@ -131,6 +137,10 @@ def guess_sheet(name: str, rows: list[tuple]) -> SheetGuess | None:
     if marks:
         marks += [l for l, t in headers.items() if l not in marks and not values(l) and t.upper() in legend]
         marks.sort(key=_col_idx)
+    else:  # blank template: two or more adjacent empty columns headed by legend codes
+        coded = [l for l, t in headers.items() if len(t) <= 5 and t.upper() in legend and not values(l)]
+        if len(coded) >= 2 and all(_col_idx(b) - _col_idx(a) == 1 for a, b in zip(coded, coded[1:])):
+            marks = coded
 
     columns: dict[str, str] = {}
     candidates: dict[str, list[str]] = {}

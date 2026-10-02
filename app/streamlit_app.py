@@ -15,6 +15,7 @@ views = Path(__file__).parent / "views"
 page = st.navigation([
     st.Page(views / "overview.py", title="Overview", icon=":material/dashboard:", default=True),
     st.Page(views / "search.py", title="Search", icon=":material/search:"),
+    st.Page(views / "draft_worksheet.py", title="Draft a worksheet", icon=":material/edit_note:"),
     st.Page(views / "add_worksheet.py", title="Add worksheet", icon=":material/upload_file:"),
 ])
 page.run()

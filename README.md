@@ -13,6 +13,11 @@ streamlit run app/streamlit_app.py
   (near-identical requirements answered differently in different RFPs).
 - **Search** - paste a requirement to find how we've answered similar ones (hybrid / semantic / keyword),
   filtered by status, client and module.
+- **Draft a worksheet** - upload a client's blank worksheet; confirm which columns to fill (dropdown options
+  are read from the workbook) and the response instructions; Claude drafts every empty answer from our past
+  answers. Review and edit in the grid (with the evidence behind each answer), then download the original
+  workbook with answers filled in - formatting, dropdowns and other content untouched. Optional highlights:
+  **red** = low-confidence answer cells, **yellow** = requirement may add implementation cost.
 - **Add worksheet** - upload a completed worksheet; the header row, columns and answer scale are detected
   and suggested, you confirm, preview, and load. Added worksheets can be removed from the same page.
 
@@ -23,7 +28,20 @@ streamlit run app/streamlit_app.py
 | `KB_DATA_DIR` | `./data` | Database, uploaded workbooks, dashboard-created profiles. On Azure, mount persistent storage here. |
 | `KB_EMBED_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model (vectors are cached per model, so switching is safe) |
 | `KB_MODEL_CACHE` | `./models` | Where model files are downloaded; bake into the image for Azure |
-| `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | - | Matcha gateway access for Claude (drafting, coming next). Put them in `.env` locally. |
+| `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | - | Matcha gateway access for Claude (drafting). Put them in `.env` locally. |
+| `KB_LLM_MODEL` | `claude-opus-5-5` | Drafting model (the only one deployed on Matcha) |
+| `KB_LLM_EFFORT` | `medium` | Drafting effort: `low` / `medium` / `high` |
+
+Drafts are stored in `KB_DATA_DIR/drafts.sqlite` (+ the uploaded workbooks in `drafts/`), separate from the
+knowledge base, which is derived data and safe to rebuild.
+
+### How drafting decides confidence and cost
+- **Confidence** is the lower of Claude's own rating and a cap from the closest past answer's similarity
+  (>= 0.85 high, >= 0.75 medium, else low); any `[placeholder]` in an answer makes it low. On a held-out test
+  (Dayton blanked, its own answers excluded) high-confidence rows matched the real submission 67/67,
+  medium 230/239, low 52/76.
+- **May add cost** is Claude's judgement (customization, third-party product, extra module/license, services
+  hours) and always set for *Custom* or *Third party* answers.
 
 ## Loader (command line)
 

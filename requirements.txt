@@ -5,3 +5,5 @@ numpy>=1.26
 python-dotenv>=1.0
 streamlit>=1.40
 altair>=5
+anthropic>=0.70
+lxml>=5

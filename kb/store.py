@@ -149,13 +149,18 @@ def embed_missing(conn: sqlite3.Connection, embedder: Embedder) -> int:
 
 
 def _filter_sql(filters: dict | None) -> tuple[str, list]:
-    """AND-clauses over records r / sources s for {"statuses": [...], "clients": [...], "modules": [...]}."""
+    """AND-clauses over records r / sources s for {"statuses": [...], "clients": [...], "modules": [...],
+    "exclude_sources": [...]}."""
     clauses, params = [], []
     for key, column in (("statuses", "r.status"), ("clients", "s.client"), ("modules", "r.module")):
         values = (filters or {}).get(key)
         if values:
             clauses.append(f"{column} IN ({','.join('?' * len(values))})")
             params.extend(values)
+    excluded = (filters or {}).get("exclude_sources")
+    if excluded:
+        clauses.append(f"r.source_id NOT IN ({','.join('?' * len(excluded))})")
+        params.extend(excluded)
     return "".join(f" AND {c}" for c in clauses), params
 
 
@@ -231,3 +236,62 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 10, status: str | 
                            if record_id in ids]
         results.append(row)
     return results
+
+
+class Retriever:
+    """Hybrid search for many queries at once (the drafter's workload).
+
+    Loads the filtered embedding matrix once and embeds all queries in one batch, instead of
+    reloading vectors per query like `search()` does.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, embedder: Embedder, filters: dict | None = None,
+                 candidates: int = 50):
+        self.conn, self.embedder, self.filters, self.candidates = conn, embedder, filters, candidates
+        where, params = _filter_sql(filters)
+        rows = conn.execute(
+            "SELECT r.record_id, e.vector FROM records r JOIN sources s USING (source_id)"
+            f" JOIN embeddings e ON e.model = ? AND e.text_sha = r.embed_sha WHERE 1=1{where}",
+            [embedder.model_name, *params]).fetchall()
+        self.ids = [r["record_id"] for r in rows]
+        self.matrix = (np.frombuffer(b"".join(r["vector"] for r in rows), dtype=np.float32).reshape(len(rows), -1)
+                       if rows else np.zeros((0, 1), dtype=np.float32))
+
+    def search_many(self, queries: list[str], limit: int = 6) -> list[list[dict]]:
+        if not queries:
+            return []
+        vectors = self.embedder.embed(queries) if len(self.ids) else None
+        ranked: list[tuple[list[str], dict[str, float], list[str]]] = []
+        for i, query in enumerate(queries):
+            keyword = _keyword_ids(self.conn, query, self.candidates, self.filters)
+            semantic, sims = [], {}
+            if vectors is not None:
+                scores = self.matrix @ vectors[i]
+                top = np.argsort(-scores)[:self.candidates]
+                semantic = [self.ids[j] for j in top]
+                sims = {self.ids[j]: float(scores[j]) for j in top}
+            fused: dict[str, float] = {}
+            for ids in (keyword, semantic):
+                for rank, record_id in enumerate(ids):
+                    fused[record_id] = fused.get(record_id, 0.0) + 1.0 / (60 + rank)
+            ranked.append((sorted(fused, key=fused.get, reverse=True)[:limit], sims, keyword))
+
+        wanted = {rid for ids, _, _ in ranked for rid in ids}
+        details = {}
+        wanted_list = list(wanted)
+        for start in range(0, len(wanted_list), 900):  # stay under SQLite's variable limit
+            chunk = wanted_list[start:start + 900]
+            for r in self.conn.execute(
+                    "SELECT r.*, s.client, s.submitted FROM records r JOIN sources s USING (source_id)"
+                    f" WHERE r.record_id IN ({','.join('?' * len(chunk))})", chunk):
+                details[r["record_id"]] = dict(r)
+        out = []
+        for ids, sims, keyword in ranked:
+            results = []
+            for rid in ids:
+                row = dict(details[rid])
+                row["similarity"] = sims.get(rid)
+                row["found_by"] = [n for n, hit in (("keyword", rid in keyword), ("semantic", rid in sims)) if hit]
+                results.append(row)
+            out.append(results)
+        return out
