@@ -1,8 +1,7 @@
 import altair as alt
-import pandas as pd
 import streamlit as st
 
-from app.common import connect, db_version, embedder, status_help, status_label
+from app.common import connect, status_help, status_label
 from kb import analysis
 
 st.title("Knowledge base overview")
@@ -59,35 +58,3 @@ st.dataframe(sources, hide_index=True, width="stretch", column_config={
     "source_id": "ID", "client": "Client", "rfp": "RFP", "worksheet": "Worksheet",
     "submitted": "Submitted", "loaded_at": "Loaded (UTC)",
     "records": st.column_config.NumberColumn("Requirements", format="%d")})
-
-# ---- Conflicts -------------------------------------------------------------------------------
-st.subheader("Conflicting answers")
-st.caption("Near-identical requirements from different worksheets whose answers disagree "
-           "(e.g. *Standard* in one RFP, *Not supported* in another). Settle these before the AI reuses them. "
-           "The more recent answer is shown first.")
-threshold = st.slider("Minimum text similarity", 0.85, 1.0, 0.95, 0.01,
-                      help="1.0 = identical wording. Lower values surface reworded duplicates, with more false matches.")
-
-
-@st.cache_data(show_spinner="Comparing requirements...")
-def _conflicts(threshold: float, model: str, _version: float) -> pd.DataFrame:
-    return analysis.conflicts(connect(), model, threshold)
-
-
-found = _conflicts(threshold, embedder().model_name, db_version())
-if found.empty:
-    st.success("No conflicting answers at this similarity level.")
-else:
-    high = int((found.severity == "high").sum())
-    st.write(f"**{len(found)}** conflicting pairs, **{high}** of them yes-vs-no.")
-    for _, row in found.iterrows():
-        title = (f"{'🔴 Yes vs. no' if row.severity == 'high' else '🟠 Qualified'} · "
-                 f"{status_label(row.status_a)} vs. {status_label(row.status_b)} · {row.requirement_a[:90]}")
-        with st.expander(title):
-            a, b = st.columns(2)
-            for col, side in ((a, "a"), (b, "b")):
-                with col:
-                    st.markdown(f"**{status_label(row[f'status_{side}'])}** — {row[f'source_{side}']}")
-                    st.write(row[f"requirement_{side}"])
-                    st.caption(row[f"comment_{side}"] or "_No comment_")
-            st.caption(f"Similarity {row.similarity:.3f}")

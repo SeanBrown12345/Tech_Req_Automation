@@ -21,6 +21,7 @@ admin = [
     st.Page(views / "overview.py", title="Overview", icon=":material/dashboard:", url_path="overview"),
     st.Page(views / "search.py", title="Search", icon=":material/search:", url_path="search"),
     st.Page(views / "add_worksheet.py", title="Add worksheet", icon=":material/upload_file:", url_path="add_worksheet"),
+    st.Page(views / "conflicts.py", title="Conflicts", icon=":material/compare_arrows:", url_path="conflicts"),
 ]
 page = st.navigation([draft, *admin], position="hidden")
 in_admin = page.url_path in {p.url_path for p in admin}
