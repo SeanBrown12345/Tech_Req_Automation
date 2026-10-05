@@ -60,8 +60,6 @@ else:
 # New draft
 # =================================================================================================
 def new_draft():
-    st.caption("Upload the client's blank requirements worksheet. Only empty answer cells are filled; "
-               "the workbook's formatting, dropdowns and other content are left exactly as they are.")
     uploaded = st.file_uploader("Blank worksheet (.xlsx / .xlsm)", type=["xlsx", "xlsm"], key="draft_upload")
     if not uploaded:
         return
@@ -82,7 +80,7 @@ def new_draft():
 
     st.subheader("1. What to fill")
     st.caption("Check the detected layout. **Pick from list** answers must be one of the listed options "
-               "(taken from the worksheet's dropdowns). Add guidance to steer a column, e.g. "
+               "(taken from the worksheet's dropdowns). Add notes to steer a column, e.g. "
                "\"Only comment when the answer is not Y\".")
     for tab, sp in zip(st.tabs([s["name"] for s in plan["sheets"]]), plan["sheets"]):
         with tab:
@@ -108,8 +106,8 @@ def new_draft():
                 column_config={
                     "Fill": st.column_config.CheckboxColumn(width="small"),
                     "Type": st.column_config.SelectboxColumn(options=list(KIND_LABELS.values()), required=True),
-                    "Options": st.column_config.TextColumn(help="Allowed answers, separated by |"),
-                    "Guidance": st.column_config.TextColumn(width="large")})
+                    "Options": st.column_config.TextColumn("Response Options", help="Allowed answers, separated by |"),
+                    "Guidance": st.column_config.TextColumn("Notes", width="large")})
             for f, row in zip(sp["fields"], edited.itertuples()):
                 f["include"] = bool(row.Fill)
                 f["guidance"] = row.Guidance or ""
@@ -120,7 +118,7 @@ def new_draft():
                     if f["kind"] == "choice":
                         f["options"] = opts
                         if not opts:
-                            st.warning(f"Column {f['columns'][0]} is *Pick from list* but has no options.")
+                            st.warning(f"Column {f['columns'][0]} is *Pick from list* but has no response options.")
 
     st.subheader("2. Instructions")
     plan["instructions"] = st.text_area(
@@ -140,7 +138,7 @@ def new_draft():
     no_options = [f"{sp['name']} column {f['columns'][0]}" for sp in plan["sheets"] if sp["include"]
                   for f in sp["fields"] if f["include"] and f["kind"] == "choice" and not f.get("options")]
     if no_options:
-        st.error("Add options (or switch to free text) before starting: " + ", ".join(no_options))
+        st.error("Add response options (or switch to free text) before starting: " + ", ".join(no_options))
     st.write(f"**{len(rows):,}** requirement rows have empty answer cells to fill"
              f" · about {max(1, round(len(rows) / 100))} min")
     if st.button("Start drafting", type="primary", disabled=not rows or bool(no_options)):
