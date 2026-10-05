@@ -19,6 +19,13 @@ c2.metric("Worksheets", len(sources))
 c3.metric("Clients", sources.client.nunique())
 c4.metric("Most recent submission", sources.submitted.dropna().max() or "—")
 
+# ---- Sources ---------------------------------------------------------------------------------
+st.subheader("Loaded worksheets")
+st.dataframe(sources, hide_index=True, width="stretch", column_config={
+    "source_id": "ID", "client": "Client", "rfp": "RFP", "worksheet": "Worksheet",
+    "submitted": "Submitted", "loaded_at": "Loaded (UTC)",
+    "records": st.column_config.NumberColumn("Requirements", format="%d")})
+
 # ---- Status mix ------------------------------------------------------------------------------
 left, right = st.columns([3, 2], gap="large")
 with left:
@@ -51,10 +58,3 @@ with right:
     table.columns = [status_label(c) if c != "TOTAL" else "Total" for c in table.columns]
     table.index.name = "Module"
     st.dataframe(table, width="stretch")
-
-# ---- Sources ---------------------------------------------------------------------------------
-st.subheader("Loaded worksheets")
-st.dataframe(sources, hide_index=True, width="stretch", column_config={
-    "source_id": "ID", "client": "Client", "rfp": "RFP", "worksheet": "Worksheet",
-    "submitted": "Submitted", "loaded_at": "Loaded (UTC)",
-    "records": st.column_config.NumberColumn("Requirements", format="%d")})
