@@ -6,8 +6,8 @@ import pandas as pd
 import streamlit as st
 
 from app.admin_layout import ACCENT
-from app.common import STATUS_LABELS, connect, status_badge, status_label
-from kb import analysis, draft
+from app.common import STATUS_LABELS, status_badge, status_label
+from kb import draft
 
 KIND_LABELS = {"choice": "Pick from list", "text": "Free text", "marks": "Mark one column"}
 CONF_LABELS = {"high": "High", "medium": "Medium", "low": "Low"}
@@ -147,7 +147,7 @@ def new_draft():
         st.error("Couldn't find a requirements table in this workbook.")
         return
 
-    st.subheader("1. What to fill")
+    st.subheader("What to fill")
     st.caption("Check the detected layout. **Pick from list** answers must be one of the listed options "
                "(taken from the worksheet's dropdowns). Add notes to steer a column, e.g. "
                "\"Only comment when the answer is not Y\".")
@@ -189,19 +189,10 @@ def new_draft():
                         if not opts:
                             st.warning(f"Column {f['columns'][0]} is *Pick from list* but has no response options.")
 
-    st.subheader("2. Instructions")
+    st.subheader("Instructions")
     plan["instructions"] = st.text_area(
         "What the client's workbook says about how to respond (edit freely - the AI follows this)",
         value=plan["instructions"], height=220, key=k("instructions"))
-
-    st.subheader("3. Start")
-    with st.expander("Testing options"):
-        sources = analysis.sources(connect())
-        plan["exclude_sources"] = st.multiselect(
-            "Leave these worksheets out of the evidence", sources.source_id.tolist(), key=k("exclude"),
-            format_func=lambda s: f"{s} ({sources.set_index('source_id').loc[s, 'client']})",
-            help="To test the drafter on a worksheet we've already answered, blank it and exclude its "
-                 "original here so the AI can't simply copy it.")
 
     rows = draft.collect_rows(plan, _read(data))
     no_options = [f"{sp['name']} column {f['columns'][0]}" for sp in plan["sheets"] if sp["include"]
@@ -212,7 +203,7 @@ def new_draft():
              f" · about {max(1, round(len(rows) / 100))} min")
     if st.button("Start drafting", type="primary", disabled=not rows or bool(no_options)):
         job_id, _ = draft.create_job(name.strip() or uploaded.name, client.strip() or None, uploaded.name, data, plan)
-        draft.start_job(job_id, plan["exclude_sources"])
+        draft.start_job(job_id)
         st.session_state.draft_job_next = job_id
         st.rerun()
 
