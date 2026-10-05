@@ -108,6 +108,11 @@ st.html(f"""<style>
 .st-key-draft-rows button p {{ font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 .st-key-draft-rows button:hover {{ color: inherit; }}
 .st-key-draft-rows [class*="st-key-delete"] button:hover {{ color: #c62828; }}
+
+/* Section headings (st.subheader) get an accent bar so each section's start stands out. */
+[data-testid="stMain"] [data-testid="stHeading"] h3 {{
+    border-left: 4px solid {ACCENT}; padding: 0.1rem 0 0.1rem 0.75rem; margin-top: 0.75rem;
+}}
 </style>""")
 with st.container(key="draft-field"):
     st.markdown("Draft")
@@ -212,6 +217,13 @@ def new_draft():
 # Existing job
 # =================================================================================================
 def show_job(job_id: str):
+    _job_page(job_id)
+    # Last, so it ends the page even when the page above stops early (no rows yet, Errors view...).
+    job = jobs.set_index("job_id").loc[job_id]
+    st.caption(f"{job.filename} · created {job.created_at[:16].replace('T', ' ')} UTC · model {job.model}")
+
+
+def _job_page(job_id: str):
     if draft.reconcile(job_id):  # was left "running" by a restarted server
         st.rerun()
     job = jobs.set_index("job_id").loc[job_id]
@@ -223,6 +235,10 @@ def show_job(job_id: str):
         j = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
         conn.close()
         running = draft.is_running(job_id)
+        if not running and job.status in ("running", "stopping"):
+            st.rerun(scope="app")  # finished: refresh the review grid
+        if not running and j["done"] >= j["total"]:
+            return  # fully drafted: no progress bar
         cols = st.columns([5, 1])
         with cols[0]:
             st.progress(j["done"] / max(j["total"], 1), text=f"{j['done']:,} of {j['total']:,} rows drafted"
@@ -238,52 +254,52 @@ def show_job(job_id: str):
                     st.rerun()
         if j["message"]:
             st.warning(j["message"])
-        if not running and job.status in ("running", "stopping"):
-            st.rerun(scope="app")  # finished: refresh the review grid
-
-    st.caption(f"{job.filename} · created {job.created_at[:16].replace('T', ' ')} UTC · model {job.model}")
-    progress()
 
     conn = draft.connect_drafts()
     rows = pd.read_sql_query("SELECT * FROM rows WHERE job_id = ? ORDER BY sheet, row_num", conn, params=[job_id])
     conn.close()
     done = rows[rows.ai.notna()]
+
+    progress()
+
     if done.empty:
         st.info("Answers appear here as they're drafted.")
         return
 
-    m = st.columns(4)
+    m = st.columns(3)
     m[0].metric("Drafted", f"{len(done):,}")
     m[1].metric("Low confidence", int((done.confidence == "low").sum()), help="Highlighted red in the download")
     m[2].metric("May add cost", int(done.cost_impact.sum()), help="Highlighted yellow in the download")
-    m[3].metric("Reviewed", int(done.reviewed.sum()))
 
     # ---- Download ----
-    with st.container(border=True):
+    st.html(f"""<style>
+.st-key-draft-download [data-testid="stDownloadButton"] button {{ background: {ACCENT}; border-color: {ACCENT}; color: #fff; }}
+.st-key-draft-download [data-testid="stDownloadButton"] button:hover {{ filter: brightness(1.15); color: #fff; }}
+</style>""")
+    with st.container(border=True, key="draft-download"):
         st.markdown("**Download the filled worksheet**")
-        d1, d2, d3 = st.columns([2, 2, 2])
+        d1, d2, d3 = st.columns([2, 2, 2], vertical_alignment="center")
         red = d1.toggle("Red: low-confidence answers", value=True, key=f"red:{job_id}",
-                        help="Fills the answer cells of low-confidence rows you haven't marked reviewed.")
+                        help="Fills the answer cells of low-confidence rows.")
         yellow = d2.toggle("Yellow: may add cost", value=True, key=f"yellow:{job_id}",
                            help="Fills the requirement cell of rows that may add implementation cost.")
-        if d3.button("Prepare file", width="stretch"):
-            st.session_state[f"out:{job_id}"] = (draft.build_output(job_id, red, yellow), red, yellow)
-        prepared = st.session_state.get(f"out:{job_id}")
-        if prepared:
-            data, r, y = prepared
-            stem = Path(job.filename).stem
-            d3.download_button("Download .xlsx", data, file_name=f"{stem} - DRAFT.xlsx", type="primary",
-                               width="stretch",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            if (r, y) != (red, yellow):
-                st.caption("Highlight settings changed - prepare the file again.")
+        # The file is built when clicked, so it always has the latest edits and highlight choices.
+        d3.download_button("Download", lambda: draft.build_output(job_id, red, yellow), type="primary",
+                           file_name=f"{Path(job.filename).stem} - DRAFT.xlsx", width="stretch",
+                           icon=":material/download:", on_click="ignore",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     # ---- Review grid ----
     st.subheader("Review")
     sheets = [s for s in dict.fromkeys(done.sheet)]
-    f1, f2, f3 = st.columns([2, 2, 3])
-    sheet = f1.selectbox("Sheet", sheets, key=f"sheet:{job_id}") if len(sheets) > 1 else sheets[0]
-    show = f2.selectbox("Show", ["All", "Low confidence", "May add cost", "Not reviewed", "Errors"], key=f"show:{job_id}")
+    # The Sheet picker only exists for multi-sheet drafts; without it, Show and Find start at the left.
+    if len(sheets) > 1:
+        f1, f2, f3 = st.columns([2, 2, 3])
+        sheet = f1.selectbox("Sheet", sheets, key=f"sheet:{job_id}")
+    else:
+        f2, f3, _ = st.columns([2, 3, 2])
+        sheet = sheets[0]
+    show = f2.selectbox("Show", ["All", "Low confidence", "May add cost", "Errors"], key=f"show:{job_id}")
     text = f3.text_input("Find", key=f"find:{job_id}", placeholder="Search requirement text")
 
     sp = next(s for s in plan["sheets"] if s["name"] == sheet)
@@ -298,8 +314,6 @@ def show_job(job_id: str):
         view = view[view.confidence == "low"]
     elif show == "May add cost":
         view = view[view.cost_impact == 1]
-    elif show == "Not reviewed":
-        view = view[view.reviewed == 0]
     if text:
         view = view[view.requirement.str.contains(text, case=False, regex=False)]
     if view.empty:
@@ -308,7 +322,6 @@ def show_job(job_id: str):
 
     answers = [json.loads(f or a) for f, a in zip(view.final.where(view.final.notna(), None), view.ai)]
     grid = pd.DataFrame({
-        "Reviewed": view.reviewed.astype(bool).values,
         "Row": view.row_num.values,
         "ID": view.req_id.values,
         "Requirement": [f"{r}  (under: {p})" if isinstance(p, str) and p else r
@@ -320,7 +333,6 @@ def show_job(job_id: str):
         "Status": view.status.map(status_label).values,
     })
     config = {
-        "Reviewed": st.column_config.CheckboxColumn(width="small"),
         "Row": st.column_config.NumberColumn(width="small"),
         "Requirement": st.column_config.TextColumn(width="large"),
         "Confidence": st.column_config.TextColumn(width="small"),
@@ -343,37 +355,32 @@ def show_job(job_id: str):
         keys = json.loads(fill)
         new_values = {f["key"]: after[f["label"]] or "" for f in fields if f["key"] in keys}
         old_values = {f["key"]: before[f["label"]] or "" for f in fields if f["key"] in keys}
-        if new_values != old_values or bool(after.Reviewed) != bool(before.Reviewed):
-            draft.save_review(job_id, sheet, int(after.Row),
-                              final=new_values if new_values != old_values else None,
-                              reviewed=bool(after.Reviewed))
+        if new_values != old_values:
+            draft.save_review(job_id, sheet, int(after.Row), final=new_values)
             changed += 1
     if changed:
         st.toast(f"Saved {changed} change{'s' if changed > 1 else ''}")
-        st.session_state.pop(f"out:{job_id}", None)
 
-    # ---- Why? ----
-    st.markdown("**Why did the AI answer this way?**")
+    # ---- Answer details ----
+    st.subheader("Answer details")
     pick = st.selectbox("Row", view.row_num.tolist(), key=f"why:{job_id}:{sheet}",
                         format_func=lambda n: f"Row {n}: {view.set_index('row_num').loc[n, 'requirement'][:100]}")
     r = view.set_index("row_num").loc[pick]
-    with st.container(border=True):
-        h1, h2 = st.columns([1, 5])
-        with h1:
-            status_badge(r.status)
-        h2.caption(f"Confidence **{CONF_LABELS.get(r.confidence)}** (AI said {CONF_LABELS.get(r.ai_confidence)}, "
-                   f"closest past answer similarity {r.best_similarity:.2f})")
-        st.write(r.rationale)
-        if r.cost_impact:
-            st.warning(f"May add cost: {r.cost_note}")
-        st.markdown("**Past answers it used**")
-        for e in json.loads(r.evidence or "[]"):
-            sim = f" · similarity {e['similarity']:.2f}" if e.get("similarity") is not None else ""
-            with st.expander(f"{e['id']} · {STATUS_LABELS.get(e['status'], e['status'])} · {e['client']} "
-                             f"({e['submitted'] or '?'}){sim}"):
-                st.write(e["requirement"])
-                st.caption(e["comment"] or "_No comment_")
-
+    h1, h2 = st.columns([1, 5])
+    with h1:
+        status_badge(r.status)
+    h2.caption(f"Confidence **{CONF_LABELS.get(r.confidence)}** (AI said {CONF_LABELS.get(r.ai_confidence)}, "
+               f"closest past answer similarity {r.best_similarity:.2f})")
+    st.write(r.rationale)
+    if r.cost_impact:
+        st.warning(f"May add cost: {r.cost_note}")
+    st.markdown("**Past answers it used**")
+    for e in json.loads(r.evidence or "[]"):
+        sim = f" · similarity {e['similarity']:.2f}" if e.get("similarity") is not None else ""
+        with st.expander(f"{e['id']} · {STATUS_LABELS.get(e['status'], e['status'])} · {e['client']} "
+                         f"({e['submitted'] or '?'}){sim}"):
+            st.write(e["requirement"])
+            st.caption(e["comment"] or "_No comment_")
 
 if choice == NEW:
     new_draft()
