@@ -12,7 +12,8 @@ from kb import draft
 KIND_LABELS = {"choice": "Pick from list", "text": "Free text", "marks": "Mark one column"}
 CONF_LABELS = {"high": "High", "medium": "Medium", "low": "Low"}
 
-st.title("Draft a worksheet")
+# Keep the page readable on wide screens instead of stretching edge to edge.
+st.html("<style>[data-testid='stMainBlockContainer'] { max-width: 1200px; margin: 0 auto; }</style>")
 
 
 @st.cache_data(show_spinner="Reading workbook...", max_entries=3)
@@ -42,6 +43,13 @@ if "draft_job_next" in st.session_state:  # set by Start / Delete: switch before
 if "draft_job" not in st.session_state or st.session_state.draft_job not in labels:
     st.session_state.draft_job = NEW
 choice = st.session_state.draft_job
+# An existing draft is titled by its name and client; "Draft a worksheet" only fits starting a new one.
+if choice == NEW:
+    st.title("Draft a worksheet")
+else:
+    current = jobs.set_index("job_id").loc[choice]
+    has_client = isinstance(current.client, str) and current.client.strip()
+    st.title(f"{current['name']} — {current.client}" if has_client else current["name"])
 
 
 @st.dialog("Delete draft?")
@@ -263,7 +271,6 @@ def _job_page(job_id: str):
     progress()
 
     if done.empty:
-        st.info("Answers appear here as they're drafted.")
         return
 
     m = st.columns(3)
@@ -371,6 +378,7 @@ def _job_page(job_id: str):
         status_badge(r.status)
     h2.caption(f"Confidence **{CONF_LABELS.get(r.confidence)}** (AI said {CONF_LABELS.get(r.ai_confidence)}, "
                f"closest past answer similarity {r.best_similarity:.2f})")
+    st.markdown("**AI reasoning**")
     st.write(r.rationale)
     if r.cost_impact:
         st.warning(f"May add cost: {r.cost_note}")
