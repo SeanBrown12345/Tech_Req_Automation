@@ -40,7 +40,20 @@ if "draft_job_next" in st.session_state:  # set by Start / Delete: switch before
     st.session_state.draft_job = st.session_state.pop("draft_job_next")
 if "draft_job" not in st.session_state or st.session_state.draft_job not in labels:
     st.session_state.draft_job = NEW
-choice = st.selectbox("Draft", list(labels), format_func=labels.get, key="draft_job")
+# The selector's value is known before it's drawn, so the Delete column is only made when it's needed.
+if st.session_state.draft_job == NEW:
+    choice = st.selectbox("Draft", list(labels), format_func=labels.get, key="draft_job")
+else:
+    pick_col, delete_col = st.columns([6, 1], vertical_alignment="bottom")
+    choice = pick_col.selectbox("Draft", list(labels), format_func=labels.get, key="draft_job")
+    running = draft.is_running(choice)
+    with delete_col.popover("Delete", icon=":material/delete:", width="stretch", disabled=running,
+                            help="Stop the draft before deleting it" if running else None):
+        st.write(f"Delete **{labels[choice]}**? Its drafted answers and review edits can't be recovered.")
+        if st.button("Delete permanently", type="primary", key=f"delete:{choice}"):
+            draft.delete_job(choice)
+            st.session_state.draft_job_next = NEW
+            st.rerun()
 
 
 # =================================================================================================
@@ -302,12 +315,6 @@ def show_job(job_id: str):
                              f"({e['submitted'] or '?'}){sim}"):
                 st.write(e["requirement"])
                 st.caption(e["comment"] or "_No comment_")
-
-    with st.expander("Delete this draft"):
-        if st.button("Delete draft permanently", type="secondary"):
-            draft.delete_job(job_id)
-            st.session_state.draft_job_next = NEW
-            st.rerun()
 
 
 if choice == NEW:
