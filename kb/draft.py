@@ -109,12 +109,14 @@ def guess_plan(data: bytes, sheets: dict[str, list[tuple]] | None = None,
             fields.append({"key": "mark", "kind": "marks", "columns": guess.mark_columns, "labels": labels,
                            "symbol": symbol, "label": "Answer (mark one column)", "guidance": ""})
 
-        first_data = first_req + 1
+        # Rows that hold requirement text. A column's dropdown is the one covering most of them:
+        # the first rows may be blocked out ("-") under a different, or broken, dropdown.
+        req_rows = [i + 1 for i in range(first_req, len(rows)) if req_idx < len(rows[i]) and clean(rows[i][req_idx])]
         for letter, head in guess.headers.items():
             if letter in role_cols - {roles.get("comment")} or letter in guess.mark_columns:
                 continue
-            options = next((d.options for d in lists.get(name, [])
-                            if d.covers(_col(letter) + 1, first_data)), None)
+            coverage = [(sum(d.covers(_col(letter) + 1, r) for r in req_rows), d.options) for d in lists.get(name, [])]
+            options = max(((n, o) for n, o in coverage if n), default=(0, None), key=lambda c: c[0])[1]
             hint = hints.get(letter, "")
             if not options and hint and "list all" not in head.lower():
                 parts = [p.strip() for p in hint.split("/") if p.strip()]
@@ -288,7 +290,7 @@ def _system_prompt(plan: dict, sheet_plan: dict, client: str | None, products: l
         if not f.get("include", True):
             continue
         guidance = f" Guidance: {f['guidance']}" if f.get("guidance") else ""
-        if f["kind"] == "choice":
+        if f["kind"] == "choice" and f.get("options"):
             field_lines.append(f'- "{f["key"]}" (column {f["columns"][0]}, "{f["label"]}"): choose exactly one of '
                                f'{json.dumps(f["options"], ensure_ascii=False)}.{guidance}')
         elif f["kind"] == "marks":
@@ -328,7 +330,7 @@ def _output_schema(sheet_plan: dict, row_nums: list[int]) -> dict:
     for f in sheet_plan["fields"]:
         if not f.get("include", True):
             continue
-        if f["kind"] == "choice":
+        if f["kind"] == "choice" and f.get("options"):  # without options it's free text, not a forced blank
             values[f["key"]] = {"type": "string", "enum": [*f["options"], ""]}
         elif f["kind"] == "marks":
             values[f["key"]] = {"type": "string", "enum": [*(f["labels"][c] for c in f["columns"]), ""]}

@@ -124,9 +124,13 @@ def new_draft():
                  "original here so the AI can't simply copy it.")
 
     rows = draft.collect_rows(plan, _read(data))
+    no_options = [f"{sp['name']} column {f['columns'][0]}" for sp in plan["sheets"] if sp["include"]
+                  for f in sp["fields"] if f["include"] and f["kind"] == "choice" and not f.get("options")]
+    if no_options:
+        st.error("Add options (or switch to free text) before starting: " + ", ".join(no_options))
     st.write(f"**{len(rows):,}** requirement rows have empty answer cells to fill"
              f" · about {max(1, round(len(rows) / 100))} min")
-    if st.button("Start drafting", type="primary", disabled=not rows):
+    if st.button("Start drafting", type="primary", disabled=not rows or bool(no_options)):
         job_id, _ = draft.create_job(name.strip() or uploaded.name, client.strip() or None, uploaded.name, data, plan)
         draft.start_job(job_id, plan["exclude_sources"])
         st.session_state.draft_job_next = job_id
