@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from app.admin_layout import ACCENT
 from app.common import STATUS_LABELS, connect, status_badge, status_label
 from kb import analysis, draft
 
@@ -35,25 +36,93 @@ def _jobs() -> pd.DataFrame:
 # ---- Pick a job --------------------------------------------------------------------------------
 jobs = _jobs()
 NEW = "➕ New draft"
-labels = {NEW: NEW} | {j.job_id: f"{j.name} — {j.client or 'no client'} ({j.created_at[:10]})" for j in jobs.itertuples()}
-if "draft_job_next" in st.session_state:  # set by Start / Delete: switch before the selector is drawn
+labels = {NEW: ":material/add: New draft"} | {j.job_id: f"{j.name} — {j.client if isinstance(j.client, str) and j.client else 'no client'} ({j.created_at[:10]})" for j in jobs.itertuples()}
+if "draft_job_next" in st.session_state:  # set by Start / Delete: switch before the picker is drawn
     st.session_state.draft_job = st.session_state.pop("draft_job_next")
 if "draft_job" not in st.session_state or st.session_state.draft_job not in labels:
     st.session_state.draft_job = NEW
-# The selector's value is known before it's drawn, so the Delete column is only made when it's needed.
-if st.session_state.draft_job == NEW:
-    choice = st.selectbox("Draft", list(labels), format_func=labels.get, key="draft_job")
-else:
-    pick_col, delete_col = st.columns([6, 1], vertical_alignment="bottom")
-    choice = pick_col.selectbox("Draft", list(labels), format_func=labels.get, key="draft_job")
-    running = draft.is_running(choice)
-    with delete_col.popover("Delete", icon=":material/delete:", width="stretch", disabled=running,
-                            help="Stop the draft before deleting it" if running else None):
-        st.write(f"Delete **{labels[choice]}**? Its drafted answers and review edits can't be recovered.")
-        if st.button("Delete permanently", type="primary", key=f"delete:{choice}"):
-            draft.delete_job(choice)
+choice = st.session_state.draft_job
+
+
+@st.dialog("Delete draft?")
+def _confirm_delete(job_id: str):
+    st.write(f"**{labels[job_id]}**")
+    st.write("Its drafted answers and review edits will be deleted. This can't be undone.")
+    cancel, delete = st.columns(2)
+    if cancel.button("Cancel", width="stretch"):
+        st.rerun()
+    if delete.button("Delete permanently", type="primary", width="stretch"):
+        draft.delete_job(job_id)
+        if job_id == choice:
             st.session_state.draft_job_next = NEW
-            st.rerun()
+        st.rerun()
+
+
+def _pick(job_id: str):
+    st.session_state.draft_job = job_id
+    st.session_state.draft_picker = False  # close the list
+
+
+def _ask_delete(job_id: str):
+    st.session_state.draft_delete = job_id
+    st.session_state.draft_picker = False  # close the list so it doesn't sit over the dialog
+
+
+# A popover instead of a selectbox, so each row can carry its own delete button. The CSS makes it
+# look like Streamlit's selectbox: grey 40px field, white menu with 40px rows and a hover highlight.
+HOVER = "rgba(151, 166, 195, 0.15)"
+st.html(f"""<style>
+.st-key-draft-field {{ gap: 0.25rem; }}
+.st-key-draft-field > [data-testid="stElementContainer"]:first-child [data-testid="stMarkdownContainer"] {{ margin-bottom: 0; }}
+.st-key-draft-field > [data-testid="stElementContainer"]:first-child p {{ font-size: 14px; line-height: 24px; margin: 0; }}
+.st-key-draft_picker [data-testid="stPopoverButton"] [data-testid="stIconMaterial"] {{ font-size: 20px; }}
+.st-key-draft_picker [data-testid="stPopoverButton"] {{
+    min-height: 40px; padding: 0 8px; border-radius: 8px; background: {HOVER}; border: 1px solid transparent;
+    font-size: 14px;
+}}
+.st-key-draft_picker [data-testid="stPopoverButton"]:hover {{ border-color: transparent; color: inherit; }}
+.st-key-draft_picker [data-testid="stPopoverButton"][aria-expanded="true"] {{ border-color: #2a78d6; }}
+.st-key-draft_picker [data-testid="stPopoverButton"] > div {{ flex: 1; display: flex; justify-content: space-between; }}
+.st-key-draft_picker [data-testid="stPopoverButton"] > div > div {{ justify-content: flex-start; text-align: left; }}
+.st-key-draft_picker [data-testid="stPopoverButton"] p {{ font-size: 14px; }}
+.st-key-draft-field [data-testid="stMarkdownContainer"] [role="img"],
+.st-key-draft-rows [data-testid="stMarkdownContainer"] [role="img"] {{
+    color: {ACCENT}; font-size: 1.25em; font-variation-settings: "wght" 600; vertical-align: -0.2em !important;
+}}
+
+[data-testid="stPopoverBody"]:has(.st-key-draft-rows) {{
+    padding: 0; border: none; border-radius: 8px; box-shadow: rgba(0, 0, 0, 0.16) 0 4px 16px;
+}}
+.st-key-draft-rows {{ gap: 0; padding: 0 5px; box-sizing: border-box; }}
+.st-key-draft-rows [data-testid="stHorizontalBlock"] {{
+    gap: 0.25rem; flex-wrap: nowrap; height: 28px; margin: 6px 0; padding: 0 8px; border-radius: 6px;
+}}
+.st-key-draft-rows [data-testid="stHorizontalBlock"]:hover {{ background: {HOVER}; }}
+.st-key-draft-rows [data-testid="stColumn"] {{ min-width: 0 !important; flex: 1 1 auto !important; width: auto !important; }}
+.st-key-draft-rows [data-testid="stColumn"]:last-child {{ flex: 0 0 1.5rem !important; }}
+.st-key-draft-rows button {{
+    min-height: 0; height: 28px; padding: 0; justify-content: flex-start; text-align: left;
+    font-weight: 400; color: inherit;
+}}
+.st-key-draft-rows button > div {{ justify-content: flex-start; }}
+.st-key-draft-rows button p {{ font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+.st-key-draft-rows button:hover {{ color: inherit; }}
+.st-key-draft-rows [class*="st-key-delete"] button:hover {{ color: #c62828; }}
+</style>""")
+with st.container(key="draft-field"):
+    st.markdown("Draft")
+    with st.popover(labels[choice], width="stretch", key="draft_picker", on_change="rerun"), \
+            st.container(key="draft-rows"):
+        for job_id, label in labels.items():
+            pick, trash = st.columns([12, 1], vertical_alignment="center")
+            pick.button(label, key=f"pick:{job_id}", type="tertiary", width="stretch", on_click=_pick, args=(job_id,))
+            if job_id != NEW:
+                running = draft.is_running(job_id)
+                trash.button("", key=f"delete:{job_id}", icon=":material/delete:", type="tertiary", disabled=running,
+                             help="Stop the draft before deleting it" if running else "Delete",
+                             on_click=_ask_delete, args=(job_id,))
+if (pending := st.session_state.pop("draft_delete", None)) in labels:
+    _confirm_delete(pending)
 
 
 # =================================================================================================
