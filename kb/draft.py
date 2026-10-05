@@ -38,6 +38,7 @@ EVIDENCE_PER_ROW = 6
 
 # Retrieval caps on confidence: the AI can't be more sure than its closest past answer allows.
 SIM_HIGH, SIM_MEDIUM = 0.85, 0.75
+SIM_SAME = 0.95  # past requirement is effectively the same one; its comment (or lack of one) is the model
 COST_STATUSES = {"CUSTOM", "THIRD_PARTY"}
 RED, YELLOW = "FFFFC7CE", "FFFFFF00"
 _PLACEHOLDER = re.compile(r"\[[^\]]{2,}\]")
@@ -310,7 +311,7 @@ Rules:
 2. When past answers disagree, prefer the most recent one, and lower your confidence.
 3. When no evidence covers the requirement, give the most cautious defensible answer and set confidence to "low".
 4. Follow the worksheet instructions below exactly - for example, include release numbers and dates, cost estimates, or explanations wherever the instructions require them. If required information (a release number, a date, an hour estimate, a price) is not in the evidence, write a clear placeholder in square brackets, e.g. [Release # and date to be confirmed], and never invent it.
-5. Comments and narratives: professional, concise, in our voice and consistent with the wording of our past comments. Never mention "evidence", other clients, or previous RFPs. Leave a comment field "" when the instructions don't call for one and a comment adds nothing.
+5. Comments and narratives: professional, concise, in our voice and consistent with the wording of our past comments. Never mention "evidence", other clients, or previous RFPs. Leave a comment field "" when the instructions don't call for one and a comment adds nothing. When none of the closest past answers (similarity {SIM_SAME} or higher) has a comment, leave the comment "" unless the worksheet instructions require one for the response you chose (for example a release number and date, or a modification estimate). If any of them has a comment, keep using it as the model for ours. Prefer not to write a comment that only restates the requirement; a comment should add a fact the requirement doesn't already contain.
 6. Fill only the fields listed in each row's "fill"; return "" for every other field.
 7. "status" is our internal classification of the answer:
 {statuses}
