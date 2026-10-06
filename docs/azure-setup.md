@@ -49,11 +49,12 @@ All three names should print. If `secret show` fails, list the secret names with
 ## 1. Create ReqFill's database and store its connection string
 
 ```bash
-az postgres flexible-server db create -g $RG -s $PG -d reqfill
+az postgres flexible-server db create -g $RG -s $PG -n reqfill
 
-# Same server and login as RFP Pilot, different database name.
-KB_DATABASE_URL=$(echo "$PILOT_URL" | sed -E 's#/[^/?]+\?#/reqfill?#')
-echo "$KB_DATABASE_URL" | sed -E 's#:[^:@/]+@#:****@#'   # should end in /reqfill?sslmode=require
+# Same server and login as RFP Pilot, different database name. Only the path right after
+# the server address is replaced (the password may itself contain "?" or "/").
+KB_DATABASE_URL=$(echo "$PILOT_URL" | sed -E 's#(\.postgres\.database\.azure\.com(:[0-9]+)?)/[^?]*#\1/reqfill#')
+echo "$KB_DATABASE_URL" | sed -E 's#//.*@#//****@#'   # should end in .azure.com:5432/reqfill?sslmode=require
 
 az containerapp secret set -g $RG -n $APP --secrets reqfill-db-url="$KB_DATABASE_URL"
 ```
