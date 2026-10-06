@@ -117,9 +117,10 @@ st.html(f"""<style>
 .st-key-draft-rows button:hover {{ color: inherit; }}
 .st-key-draft-rows [class*="st-key-delete"] button:hover {{ color: #c62828; }}
 
-/* Section headings (st.subheader) get an accent bar so each section's start stands out. */
+/* Section headings (st.subheader) are underlined like the admin pages' headings, so each section's
+   start stands out. */
 [data-testid="stMain"] [data-testid="stHeading"] h3 {{
-    border-left: 4px solid {ACCENT}; padding: 0.1rem 0 0.1rem 0.75rem; margin-top: 0.75rem;
+    padding: 0 0 0.6rem; border-bottom: 1px solid rgba(128, 128, 128, 0.25); margin: 0.75rem 0 0.5rem;
 }}
 </style>""")
 with st.container(key="draft-field"):

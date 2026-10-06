@@ -10,9 +10,6 @@ if analysis.sources(connect()).empty:
     st.info("The knowledge base is empty. Add a completed worksheet on the **Add worksheet** page.")
     st.stop()
 
-st.caption("Near-identical requirements from different worksheets whose answers disagree "
-           "(e.g. *Standard* in one RFP, *Not supported* in another). Settle these before the AI reuses them. "
-           "The more recent answer is shown first.")
 threshold = st.slider("Minimum text similarity", 0.85, 1.0, 0.95, 0.01,
                       help="1.0 = identical wording. Lower values surface reworded duplicates, with more false matches.")
 

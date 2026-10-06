@@ -5,23 +5,37 @@ import streamlit as st
 from app.common import STATUS_LABELS, connect, embedder, status_badge, status_help, status_label
 from kb import analysis, store
 
-st.title("Search past answers")
-st.caption("Paste a requirement from a new RFP to see how we've answered similar ones before.")
+st.title("Search Knowledge Base")
+st.caption("Search past answers")
 
 conn = connect()
 options = analysis.filter_options(conn)
 
-query = st.text_area("Requirement or keywords", height=90,
-                     placeholder="e.g. The system shall support single sign-on via SAML 2.0 for staff users")
-f1, f2, f3, f4 = st.columns([2, 2, 2, 1])
-statuses = f1.multiselect("Status", options["statuses"], format_func=status_label, help=status_help())
-clients = f2.multiselect("Client", options["clients"])
-modules = f3.multiselect("Module", options["modules"])
-limit = f4.number_input("Results", 5, 50, 10, step=5)
-mode = st.segmented_control(
-    "Match by", ["hybrid", "semantic", "keyword"], default="hybrid", format_func=str.title,
-    help="**Hybrid** combines both. **Semantic** matches meaning (finds rewordings). "
-         "**Keyword** matches exact terms (best for acronyms and product names).") or "hybrid"
+# The Search button sits inside the text box's bottom-right corner (it replaces the box's own
+# "Press Ctrl+Enter to apply" hint there; Ctrl+Enter still works).
+st.html("""<style>
+.st-key-search-box { position: relative; }
+.st-key-search-box textarea { padding-right: 7.5rem; }  /* text wraps before reaching the button */
+.st-key-search-box [data-testid="InputInstructions"] { display: none; }
+.st-key-search-box [data-testid="stElementContainer"]:has([data-testid="stButton"]) {
+    position: absolute; right: 0.6rem; bottom: 0.6rem; width: auto; z-index: 1;
+}
+</style>""")
+with st.container(key="search-box", gap=None):
+    query = st.text_area("Requirement or keywords", height=130,
+                         placeholder="e.g. The system shall support single sign-on via SAML 2.0 for staff users")
+    # Clicking it commits the typed text and reruns the page, which runs the search below.
+    st.button("Search", type="primary", icon=":material/search:")
+with st.expander("Advanced"):
+    f1, f2, f3, f4 = st.columns([2, 2, 2, 1])
+    statuses = f1.multiselect("Status", options["statuses"], format_func=status_label, help=status_help())
+    clients = f2.multiselect("Client", options["clients"])
+    modules = f3.multiselect("Module", options["modules"])
+    limit = f4.number_input("Results", 5, 50, 10, step=5)
+    mode = st.segmented_control(
+        "Match by", ["hybrid", "semantic", "keyword"], default="hybrid", format_func=str.title,
+        help="**Hybrid** combines both. **Semantic** matches meaning (finds rewordings). "
+             "**Keyword** matches exact terms (best for acronyms and product names).") or "hybrid"
 
 if not query.strip():
     st.stop()

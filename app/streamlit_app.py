@@ -12,7 +12,7 @@ import streamlit as st  # noqa: E402
 from app.admin_layout import admin_layout  # noqa: E402
 from app.header import APP_NAME, render_header  # noqa: E402
 
-st.set_page_config(page_title=APP_NAME, page_icon=":material/fact_check:", layout="wide")
+st.set_page_config(page_title=APP_NAME, page_icon=str(Path(__file__).parent / "assets" / "favicon.png"), layout="wide")
 
 views = Path(__file__).parent / "views"
 draft = st.Page(views / "draft_worksheet.py", title="Draft a worksheet", icon=":material/edit_note:", default=True)

@@ -16,8 +16,12 @@ _CSS = f"""
 .st-key-admin-nav [data-testid="stPageLink"], .st-key-admin-nav [data-testid="stPageLink"] > div {{
     width: 100% !important;
 }}
+/* Streamlit pulls page links together with -6px margins; with hover backgrounds that makes
+   neighbouring items overlap, so space them normally instead. */
+.st-key-admin-nav [data-testid="stElementContainer"]:has([data-testid="stPageLink"]) {{ margin: 0; }}
 .st-key-admin-nav a {{
-    position: relative; width: 100%; padding: 0.35rem 0.75rem; border-radius: 6px; background: transparent;
+    position: relative; width: 100%; margin: 0; padding: 0.2rem 0.75rem; border-radius: 6px;
+    background: transparent;
 }}
 .st-key-admin-nav a:hover {{ background: rgba(128, 128, 128, 0.12); }}
 .st-key-admin-nav-active a {{ background: rgba(128, 128, 128, 0.12); }}
@@ -27,9 +31,11 @@ _CSS = f"""
     border-radius: 6px; background: {ACCENT};
 }}
 
+/* Content: a little breathing room under the banner (the section list stays where it is). */
+.st-key-admin-content {{ padding-top: 0.75rem; }}
 /* Content: page titles become section headings with a rule under them, as on GitHub. */
 .st-key-admin-content h1 {{
-    font-size: 1.6rem; font-weight: 600; padding: 0 0 0.6rem;
+    font-size: 1.75rem; font-weight: 600; padding: 0 0 0.6rem;  /* same size as the section headings */
     border-bottom: 1px solid rgba(128, 128, 128, 0.25); margin-bottom: 0.5rem;
 }}
 </style>

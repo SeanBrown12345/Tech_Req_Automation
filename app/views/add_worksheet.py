@@ -50,7 +50,8 @@ def repo_source_ids() -> set[str]:
 
 
 def data_profiles() -> list[Path]:
-    return sorted(settings.DATA_PROFILES_DIR.glob("*.yaml"))
+    """Worksheets added from the dashboard, latest upload first (the profile is written on each save)."""
+    return sorted(settings.DATA_PROFILES_DIR.glob("*.yaml"), key=lambda p: p.stat().st_mtime, reverse=True)
 
 
 def sheet_editor(fhash: str, name: str, rows: list[tuple], guess) -> dict | None:
@@ -151,7 +152,13 @@ st.title("Add a completed worksheet")
 st.caption("Upload a worksheet we've already submitted. Confirm how it's laid out, preview, then load it "
            "into the knowledge base.")
 
-uploaded = st.file_uploader("Completed worksheet (.xlsx / .xlsm)", type=["xlsx", "xlsm"])
+if loaded_msg := st.session_state.pop("add_ws:loaded", None):
+    st.success(loaded_msg)
+
+# Bumping the uploader's key after a save clears it, so the page is ready for the next worksheet.
+upload_round = st.session_state.setdefault("add_ws:round", 0)
+uploaded = st.file_uploader("Completed worksheet (.xlsx / .xlsm)", type=["xlsx", "xlsm"],
+                            key=f"add_ws:upload:{upload_round}")
 
 if uploaded:
     data = uploaded.getvalue()
@@ -244,12 +251,15 @@ if uploaded:
             records, reports = extract_profile(profile)
             store.replace_source(conn, profile, records)
             added = store.embed_missing(conn, embedder())
-        st.success(f"Loaded **{len(records):,}** requirements from {uploaded.name} ({added:,} new embeddings). "
-                   "They're searchable now.")
+        st.session_state["add_ws:loaded"] = (
+            f"Loaded **{len(records):,}** requirements from {uploaded.name} ({added:,} new embeddings). "
+            "They're searchable now.")
+        st.session_state["add_ws:round"] = upload_round + 1
+        st.rerun()
 
 # ---- Manage worksheets added here ------------------------------------------------------------
 st.divider()
-st.subheader("Worksheets added from the dashboard")
+st.subheader("Uploaded Worksheets")
 added_profiles = data_profiles()
 if not added_profiles:
     st.caption("None yet. Worksheets defined in the repository (config/profiles) are managed in git.")
