@@ -95,6 +95,53 @@ def cmd_export(args, conn):
     return 0
 
 
+def cmd_copy_to_postgres(args, conn):
+    """Copy local SQLite data (knowledge base + drafts) into the hosted Postgres database."""
+    import sqlite3
+
+    from kb import db, draft
+
+    if not db.is_postgres(conn):
+        print("Set KB_DATABASE_URL to the target Postgres database first.")
+        return 1
+    drafts_conn = draft.connect_drafts()
+    targets = {"sources": conn, "records": conn, "embeddings": conn, "jobs": drafts_conn, "rows": drafts_conn}
+    if not args.replace:
+        filled = [t for t in ("sources", "jobs") if targets[t].execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]]
+        if filled:
+            print(f"Postgres already has data in: {', '.join(filled)}. Re-run with --replace to overwrite it.")
+            return 1
+
+    sources = {"sources": args.src / "kb.sqlite", "records": args.src / "kb.sqlite",
+               "embeddings": args.src / "kb.sqlite", "jobs": args.src / "drafts.sqlite",
+               "rows": args.src / "drafts.sqlite"}
+    # Only vectors some record uses; old ones from removed worksheets stay behind.
+    where = {"embeddings": " WHERE text_sha IN (SELECT embed_sha FROM records)"}
+    with conn, drafts_conn:
+        for table in ("rows", "jobs", "records", "sources"):  # children before parents
+            targets[table].execute(f"DELETE FROM {table}")
+        conn.execute("DELETE FROM embeddings")
+        for table in ("sources", "records", "embeddings", "jobs", "rows"):
+            path = sources[table]
+            if not path.exists():
+                print(f"  {table:<10} skipped ({path} not found)")
+                continue
+            src = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+            # Columns both sides have: an older local file can carry columns since dropped.
+            wanted = {r[0] for r in targets[table].execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = ?"
+                " AND is_generated = 'NEVER'", (table,))}
+            columns = [r[1] for r in src.execute(f"PRAGMA table_info({table})") if r[1] in wanted]
+            rows = src.execute(f"SELECT {', '.join(columns)} FROM {table}{where.get(table, '')}").fetchall()
+            src.close()
+            targets[table].executemany(
+                f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' * len(columns))})", rows)
+            print(f"  {table:<10} {len(rows):>7,} rows")
+    drafts_conn.close()
+    print("Done. Copy the workbook folders (workbooks/, profiles/, drafts/) to KB_DATA_DIR as well.")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m kb", description=__doc__)
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help=f"SQLite file (default {DEFAULT_DB})")
@@ -121,6 +168,12 @@ def main(argv=None):
     p = sub.add_parser("export", help="Dump all records as JSONL")
     p.add_argument("out", type=Path)
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("copy-to-postgres", help="One-time move of local SQLite data into KB_DATABASE_URL")
+    p.add_argument("--from", dest="src", type=Path, default=settings.DATA_DIR,
+                   help="Folder holding kb.sqlite and drafts.sqlite (default KB_DATA_DIR)")
+    p.add_argument("--replace", action="store_true", help="Overwrite data already in Postgres")
+    p.set_defaults(func=cmd_copy_to_postgres)
 
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):

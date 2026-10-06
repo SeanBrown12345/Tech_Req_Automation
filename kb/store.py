@@ -1,5 +1,5 @@
-"""SQLite storage: raw history of every answered requirement, FTS5 keyword search, and
-cached embeddings for semantic search.
+"""Storage: raw history of every answered requirement, keyword search, and cached embeddings
+for semantic search. SQLite (FTS5) locally; Postgres (tsvector) when hosted - see kb.db.
 
 Re-ingesting a profile replaces that source's rows, so loading is idempotent. Embeddings are
 cached by (model, text hash), so re-ingesting unchanged rows doesn't re-embed them.
@@ -7,12 +7,13 @@ cached by (model, text hash), so re-ingesting unchanged rows doesn't re-embed th
 
 import hashlib
 import json
-import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 
+from kb import db, settings
 from kb.embed import Embedder, embedding_text, text_sha
 from kb.extract import Record
 from kb.profile import Profile
@@ -71,12 +72,74 @@ CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(
 );
 """
 
+# Postgres: the same tables, with keyword search as a generated tsvector on records instead of
+# an FTS5 table. Weights A-D follow the FTS5 bm25 column weights (requirement > lead-in > comment
+# > category). The schema version lives in `meta`.
+PG_SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
-def connect(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+CREATE TABLE IF NOT EXISTS sources (
+    source_id    TEXT PRIMARY KEY,
+    file         TEXT NOT NULL,
+    file_sha256  TEXT NOT NULL,
+    client       TEXT,
+    rfp          TEXT,
+    worksheet    TEXT,
+    submitted    TEXT,
+    products     TEXT,
+    loaded_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS records (
+    record_id        TEXT PRIMARY KEY,
+    source_id        TEXT NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+    sheet            TEXT NOT NULL,
+    row_num          INTEGER NOT NULL,
+    module           TEXT,
+    req_id           TEXT,
+    category         TEXT,
+    subcategory      TEXT,
+    section          TEXT,
+    parent_text      TEXT,
+    requirement      TEXT NOT NULL,
+    status           TEXT,
+    answer_raw       TEXT NOT NULL,
+    comment          TEXT,
+    attributes       TEXT NOT NULL,
+    warnings         TEXT NOT NULL,
+    embed_sha        TEXT NOT NULL,
+    client_specific  INTEGER NOT NULL DEFAULT 0,
+    canonical_id     TEXT,
+    tsv tsvector GENERATED ALWAYS AS (
+        setweight(to_tsvector('english'::regconfig, coalesce(requirement, '')), 'A') ||
+        setweight(to_tsvector('english'::regconfig, coalesce(parent_text, '')), 'B') ||
+        setweight(to_tsvector('english'::regconfig, coalesce(comment, '')), 'C') ||
+        setweight(to_tsvector('english'::regconfig, coalesce(category, '') || ' ' || coalesce(subcategory, '')
+                              || ' ' || coalesce(section, '')), 'D')
+    ) STORED
+);
+CREATE INDEX IF NOT EXISTS records_status ON records(status);
+CREATE INDEX IF NOT EXISTS records_source ON records(source_id);
+CREATE INDEX IF NOT EXISTS records_tsv ON records USING GIN (tsv);
+
+CREATE TABLE IF NOT EXISTS embeddings (
+    model     TEXT NOT NULL,
+    text_sha  TEXT NOT NULL,
+    vector    BYTEA NOT NULL,
+    PRIMARY KEY (model, text_sha)
+);
+"""
+
+_pg_ready = False
+_pg_lock = threading.Lock()
+
+
+def connect(db_path: Path | None = None):
+    """The knowledge base: `db_path` (default settings.DB_PATH) locally, Postgres when hosted."""
+    conn = db.connect(db_path or settings.DB_PATH)
+    if db.is_postgres(conn):
+        _init_postgres(conn)
+        return conn
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version != SCHEMA_VERSION:
         has_tables = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'").fetchone()[0]
@@ -90,16 +153,36 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _init_postgres(conn) -> None:
+    """Create the tables once per process. Unlike the local file, the hosted knowledge base holds
+    worksheets whose source files aren't in the container, so a schema change is never handled by
+    dropping it: it stops here until the tables are migrated."""
+    global _pg_ready
+    with _pg_lock:
+        if _pg_ready:
+            return
+        conn.executescript(PG_SCHEMA)
+        row = conn.execute("SELECT value FROM meta WHERE key = 'kb_schema'").fetchone()
+        if row is None:
+            conn.execute("INSERT INTO meta (key, value) VALUES ('kb_schema', ?)", (str(SCHEMA_VERSION),))
+        elif row[0] != str(SCHEMA_VERSION):
+            raise RuntimeError(f"Hosted knowledge base is schema v{row[0]}; this code expects v{SCHEMA_VERSION}. "
+                               "Migrate the Postgres tables before deploying this version.")
+        _pg_ready = True
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def replace_source(conn: sqlite3.Connection, profile: Profile, records: list[Record]) -> None:
+def replace_source(conn, profile: Profile, records: list[Record]) -> None:
     src = profile.source
+    fts = not db.is_postgres(conn)  # Postgres keeps its keyword index as a column of records
     with conn:
-        conn.execute(
-            "DELETE FROM records_fts WHERE record_id IN (SELECT record_id FROM records WHERE source_id = ?)",
-            (profile.source_id,))
+        if fts:
+            conn.execute(
+                "DELETE FROM records_fts WHERE record_id IN (SELECT record_id FROM records WHERE source_id = ?)",
+                (profile.source_id,))
         conn.execute("DELETE FROM records WHERE source_id = ?", (profile.source_id,))
         conn.execute("DELETE FROM sources WHERE source_id = ?", (profile.source_id,))
         conn.execute(
@@ -115,22 +198,25 @@ def replace_source(conn: sqlite3.Connection, profile: Profile, records: list[Rec
               r.section, r.parent_text, r.requirement, r.status, json.dumps(r.answer_raw), r.comment,
               json.dumps(r.attributes), json.dumps(r.warnings),
               text_sha(embedding_text(r.requirement, r.parent_text))) for r in records])
-        conn.executemany(
-            "INSERT INTO records_fts (record_id, requirement, parent_text, comment, category) VALUES (?, ?, ?, ?, ?)",
-            [(r.record_id, r.requirement, r.parent_text, r.comment,
-              " ".join(filter(None, [r.category, r.subcategory, r.section]))) for r in records])
+        if fts:
+            conn.executemany(
+                "INSERT INTO records_fts (record_id, requirement, parent_text, comment, category)"
+                " VALUES (?, ?, ?, ?, ?)",
+                [(r.record_id, r.requirement, r.parent_text, r.comment,
+                  " ".join(filter(None, [r.category, r.subcategory, r.section]))) for r in records])
 
 
-def delete_source(conn: sqlite3.Connection, source_id: str) -> None:
+def delete_source(conn, source_id: str) -> None:
     with conn:
-        conn.execute(
-            "DELETE FROM records_fts WHERE record_id IN (SELECT record_id FROM records WHERE source_id = ?)",
-            (source_id,))
+        if not db.is_postgres(conn):
+            conn.execute(
+                "DELETE FROM records_fts WHERE record_id IN (SELECT record_id FROM records WHERE source_id = ?)",
+                (source_id,))
         conn.execute("DELETE FROM records WHERE source_id = ?", (source_id,))
         conn.execute("DELETE FROM sources WHERE source_id = ?", (source_id,))
 
 
-def embed_missing(conn: sqlite3.Connection, embedder: Embedder) -> int:
+def embed_missing(conn, embedder: Embedder) -> int:
     """Embed every record text that has no cached vector for this model. Returns how many were added."""
     rows = conn.execute(
         "SELECT DISTINCT r.embed_sha, r.requirement, r.parent_text FROM records r"
@@ -143,9 +229,45 @@ def embed_missing(conn: sqlite3.Connection, embedder: Embedder) -> int:
     vectors = embedder.embed(list(unique.values()))
     with conn:
         conn.executemany(
-            "INSERT OR REPLACE INTO embeddings (model, text_sha, vector) VALUES (?, ?, ?)",
+            "INSERT INTO embeddings (model, text_sha, vector) VALUES (?, ?, ?)"
+            " ON CONFLICT (model, text_sha) DO UPDATE SET vector = excluded.vector",
             [(embedder.model_name, sha, v.tobytes()) for sha, v in zip(unique, vectors)])
     return len(unique)
+
+
+def data_version(conn) -> str:
+    """Changes whenever records or embeddings change; use as a cache key for derived data."""
+    sources, loaded = conn.execute("SELECT COUNT(*), MAX(loaded_at) FROM sources").fetchone()
+    vectors = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+    return f"{sources}|{loaded}|{vectors}"
+
+
+# Every record's embedding, kept per process and model: loading them pulls every vector out of the
+# database (megabytes over the network when hosted), so do it once per data change, not per search.
+_vectors: dict[str, tuple[str, list[str], np.ndarray]] = {}
+_vectors_lock = threading.Lock()
+
+
+def _vector_matrix(conn, model: str, filters: dict | None) -> tuple[list[str], np.ndarray]:
+    version = data_version(conn)
+    with _vectors_lock:
+        cached = _vectors.get(model)
+        if not cached or cached[0] != version:
+            rows = conn.execute(
+                "SELECT r.record_id, e.vector FROM records r"
+                " JOIN embeddings e ON e.model = ? AND e.text_sha = r.embed_sha ORDER BY r.record_id",
+                (model,)).fetchall()
+            matrix = (np.frombuffer(b"".join(r[1] for r in rows), dtype=np.float32).reshape(len(rows), -1)
+                      if rows else np.zeros((0, 1), dtype=np.float32))
+            cached = _vectors[model] = (version, [r[0] for r in rows], matrix)
+    _, ids, matrix = cached
+    where, params = _filter_sql(filters)
+    if not where:
+        return ids, matrix
+    allowed = {r[0] for r in conn.execute(
+        f"SELECT r.record_id FROM records r JOIN sources s USING (source_id) WHERE 1=1{where}", params)}
+    keep = [i for i, rid in enumerate(ids) if rid in allowed]
+    return [ids[i] for i in keep], matrix[keep]
 
 
 def _filter_sql(filters: dict | None) -> tuple[str, list]:
@@ -164,36 +286,37 @@ def _filter_sql(filters: dict | None) -> tuple[str, list]:
     return "".join(f" AND {c}" for c in clauses), params
 
 
-def _keyword_ids(conn: sqlite3.Connection, query: str, limit: int, filters: dict | None) -> list[str]:
+def _keyword_ids(conn, query: str, limit: int, filters: dict | None) -> list[str]:
     # Quote each term so user text can't be parsed as FTS syntax; OR them so partial matches still rank.
     terms = [t.replace('"', "") for t in query.split() if t.strip('"')]
     if not terms:
         return []
-    match = " OR ".join(f'"{t}"' for t in terms)
     where, params = _filter_sql(filters)
+    if db.is_postgres(conn):
+        # One plainto_tsquery per term (user text is never parsed as query syntax), OR-ed together.
+        tsquery = " || ".join(["plainto_tsquery('english', ?)"] * len(terms))
+        sql = (f"SELECT r.record_id FROM records r JOIN sources s USING (source_id), (SELECT {tsquery}) AS q(q)"
+               f" WHERE r.tsv @@ q.q{where} ORDER BY ts_rank(r.tsv, q.q) DESC LIMIT ?")
+        return [row[0] for row in conn.execute(sql, [*terms, *params, limit])]
+    match = " OR ".join(f'"{t}"' for t in terms)
     sql = ("SELECT r.record_id FROM records_fts JOIN records r USING (record_id) JOIN sources s USING (source_id)"
            f" WHERE records_fts MATCH ?{where}"
            " ORDER BY bm25(records_fts, 0, 4.0, 2.0, 1.0, 1.0) LIMIT ?")
     return [row[0] for row in conn.execute(sql, [match, *params, limit])]
 
 
-def _semantic_ids(conn: sqlite3.Connection, query: str, embedder: Embedder, limit: int,
+def _semantic_ids(conn, query: str, embedder: Embedder, limit: int,
                   filters: dict | None) -> tuple[list[str], dict[str, float]]:
-    where, params = _filter_sql(filters)
-    sql = ("SELECT r.record_id, e.vector FROM records r JOIN sources s USING (source_id)"
-           f" JOIN embeddings e ON e.model = ? AND e.text_sha = r.embed_sha WHERE 1=1{where}")
-    rows = conn.execute(sql, [embedder.model_name, *params]).fetchall()
-    if not rows:
+    ids, matrix = _vector_matrix(conn, embedder.model_name, filters)
+    if not ids:
         return [], {}
-    # Brute-force cosine similarity: fine for tens of thousands of rows. Replace with
-    # pgvector / Azure AI Search when hosted.
-    matrix = np.frombuffer(b"".join(r["vector"] for r in rows), dtype=np.float32).reshape(len(rows), -1)
+    # Brute-force cosine similarity: fine for tens of thousands of rows.
     sims = matrix @ embedder.embed([query])[0]
     top = np.argsort(-sims)[:limit]
-    return [rows[i]["record_id"] for i in top], {rows[i]["record_id"]: float(sims[i]) for i in top}
+    return [ids[i] for i in top], {ids[i]: float(sims[i]) for i in top}
 
 
-def search(conn: sqlite3.Connection, query: str, limit: int = 10, status: str | None = None,
+def search(conn, query: str, limit: int = 10, status: str | None = None,
            mode: str = "hybrid", embedder: Embedder | None = None, candidates: int = 50,
            filters: dict | None = None) -> list[dict]:
     """Find past records similar to `query`.
@@ -245,17 +368,9 @@ class Retriever:
     reloading vectors per query like `search()` does.
     """
 
-    def __init__(self, conn: sqlite3.Connection, embedder: Embedder, filters: dict | None = None,
-                 candidates: int = 50):
+    def __init__(self, conn, embedder: Embedder, filters: dict | None = None, candidates: int = 50):
         self.conn, self.embedder, self.filters, self.candidates = conn, embedder, filters, candidates
-        where, params = _filter_sql(filters)
-        rows = conn.execute(
-            "SELECT r.record_id, e.vector FROM records r JOIN sources s USING (source_id)"
-            f" JOIN embeddings e ON e.model = ? AND e.text_sha = r.embed_sha WHERE 1=1{where}",
-            [embedder.model_name, *params]).fetchall()
-        self.ids = [r["record_id"] for r in rows]
-        self.matrix = (np.frombuffer(b"".join(r["vector"] for r in rows), dtype=np.float32).reshape(len(rows), -1)
-                       if rows else np.zeros((0, 1), dtype=np.float32))
+        self.ids, self.matrix = _vector_matrix(conn, embedder.model_name, filters)
 
     def search_many(self, queries: list[str], limit: int = 6) -> list[list[dict]]:
         if not queries:

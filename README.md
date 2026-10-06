@@ -31,6 +31,7 @@ settings-style page with Overview, Search and Add worksheet listed on the left.
 | Env var | Default | Purpose |
 |---|---|---|
 | `KB_DATA_DIR` | `./data` | Database, uploaded workbooks, dashboard-created profiles. On Azure, mount persistent storage here. |
+| `KB_DATABASE_URL` | - | Postgres DSN for the knowledge base and drafts (hosted). Unset = SQLite files in `KB_DATA_DIR`. Deliberately not `DATABASE_URL`, which RFP Pilot uses in the shared container. |
 | `KB_EMBED_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model (vectors are cached per model, so switching is safe) |
 | `KB_MODEL_CACHE` | `./models` | Where model files are downloaded; bake into the image for Azure |
 | `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | - | Matcha gateway access for Claude (drafting). Put them in `.env` locally. |
@@ -39,6 +40,15 @@ settings-style page with Overview, Search and Add worksheet listed on the left.
 
 Drafts are stored in `KB_DATA_DIR/drafts.sqlite` (+ the uploaded workbooks in `drafts/`), separate from the
 knowledge base, which is derived data and safe to rebuild.
+
+### Hosting
+ReqFill is served at `<RFP Pilot URL>/ReqFill/`, bundled into RFP Pilot's container (the `Bid_Classification`
+repo, where this repo is the `reqfill` submodule). There, `KB_DATABASE_URL` points the knowledge base and drafts at
+a Postgres database and `KB_DATA_DIR` at an Azure Files share for workbook files; see `DEPLOY.md` in that repo.
+Pushing this repo's `main` does not deploy by itself: the submodule pointer in `Bid_Classification` must be bumped.
+
+To move local data into the hosted database once: `python -m kb copy-to-postgres --from <folder with kb.sqlite and
+drafts.sqlite>` with `KB_DATABASE_URL` set (refuses to overwrite existing data without `--replace`).
 
 ### How drafting decides confidence and cost
 - **Confidence** is the lower of Claude's own rating and a cap from the closest past answer's similarity

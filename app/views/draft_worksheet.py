@@ -7,7 +7,7 @@ import streamlit as st
 
 from app.admin_layout import ACCENT
 from app.common import STATUS_LABELS, status_badge, status_label
-from kb import draft
+from kb import db, draft
 
 KIND_LABELS = {"choice": "Pick from list", "text": "Free text", "marks": "Mark one column"}
 CONF_LABELS = {"high": "High", "medium": "Medium", "low": "Low"}
@@ -29,7 +29,7 @@ def _plan(data: bytes, header_rows: tuple) -> dict:
 def _jobs() -> pd.DataFrame:
     conn = draft.connect_drafts()
     try:
-        return pd.read_sql_query("SELECT * FROM jobs ORDER BY created_at DESC", conn)
+        return db.read_sql(conn, "SELECT * FROM jobs ORDER BY created_at DESC")
     finally:
         conn.close()
 
@@ -269,7 +269,7 @@ def _job_page(job_id: str):
             st.warning(j["message"])
 
     conn = draft.connect_drafts()
-    rows = pd.read_sql_query("SELECT * FROM rows WHERE job_id = ? ORDER BY sheet, row_num", conn, params=[job_id])
+    rows = db.read_sql(conn, "SELECT * FROM rows WHERE job_id = ? ORDER BY sheet, row_num", [job_id])
     conn.close()
     done = rows[rows.ai.notna()]
 

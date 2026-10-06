@@ -2,7 +2,7 @@
 
 import streamlit as st
 
-from kb import settings, store
+from kb import store
 from kb.embed import Embedder
 from kb.statuses import STATUSES
 
@@ -31,8 +31,8 @@ def status_help() -> str:
 
 
 def connect():
-    """A fresh connection per script run (SQLite connections can't be shared across Streamlit threads)."""
-    return store.connect(settings.DB_PATH)
+    """A fresh connection per script run (connections can't be shared across Streamlit threads)."""
+    return store.connect()
 
 
 @st.cache_resource(show_spinner="Loading embedding model...")
@@ -42,7 +42,10 @@ def embedder() -> Embedder:
     return model
 
 
-def db_version() -> float:
-    """Changes whenever the database file changes; use as a cache key for derived data."""
-    path = settings.DB_PATH
-    return path.stat().st_mtime if path.exists() else 0.0
+def db_version() -> str:
+    """Changes whenever the knowledge base changes; use as a cache key for derived data."""
+    conn = connect()
+    try:
+        return store.data_version(conn)
+    finally:
+        conn.close()

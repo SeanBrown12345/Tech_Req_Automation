@@ -15,7 +15,7 @@ threshold = st.slider("Minimum text similarity", 0.85, 1.0, 0.95, 0.01,
 
 
 @st.cache_data(show_spinner="Comparing requirements...")
-def _conflicts(threshold: float, model: str, _version: float) -> pd.DataFrame:
+def _conflicts(threshold: float, model: str, version: str) -> pd.DataFrame:
     return analysis.conflicts(connect(), model, threshold)
 
 

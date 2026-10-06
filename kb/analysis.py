@@ -1,9 +1,9 @@
 """Read-only views over the knowledge base for the dashboard: summaries and answer conflicts."""
 
-import sqlite3
-
 import numpy as np
 import pandas as pd
+
+from kb.db import read_sql
 
 # How statuses group when checking whether two answers disagree.
 STATUS_FAMILY = {
@@ -14,28 +14,29 @@ STATUS_FAMILY = {
 }  # NARRATIVE / NEEDS_DISCUSSION / NOT_APPLICABLE carry no comparable position
 
 
-def sources(conn: sqlite3.Connection) -> pd.DataFrame:
-    return pd.read_sql_query(
+def sources(conn) -> pd.DataFrame:
+    return read_sql(conn, 
         "SELECT s.source_id, s.client, s.rfp, s.worksheet, s.submitted, s.loaded_at,"
         " COUNT(r.record_id) AS records"
         " FROM sources s LEFT JOIN records r USING (source_id)"
-        " GROUP BY s.source_id ORDER BY s.submitted DESC, s.client", conn)
+        " GROUP BY s.source_id ORDER BY s.submitted DESC NULLS LAST, s.client")
 
 
-def status_counts(conn: sqlite3.Connection, source_ids: list[str] | None = None) -> pd.DataFrame:
+def status_counts(conn, source_ids: list[str] | None = None) -> pd.DataFrame:
     sql = "SELECT COALESCE(status, 'NONE') AS status, COUNT(*) AS records FROM records"
     params: list = []
     if source_ids:
         sql += f" WHERE source_id IN ({','.join('?' * len(source_ids))})"
         params = list(source_ids)
-    return pd.read_sql_query(sql + " GROUP BY status ORDER BY records DESC", conn, params=params)
+    return read_sql(conn, sql + " GROUP BY status ORDER BY records DESC", params)
 
 
-def module_status(conn: sqlite3.Connection) -> pd.DataFrame:
+def module_status(conn) -> pd.DataFrame:
     """Records per module (rows) x status (columns)."""
-    df = pd.read_sql_query(
+    df = read_sql(
+        conn,
         "SELECT COALESCE(module, '(none)') AS module, COALESCE(status, 'NONE') AS status, COUNT(*) AS n"
-        " FROM records GROUP BY module, status", conn)
+        " FROM records GROUP BY module, status")
     if df.empty:
         return df
     table = df.pivot_table(index="module", columns="status", values="n", fill_value=0, aggfunc="sum")
@@ -44,7 +45,7 @@ def module_status(conn: sqlite3.Connection) -> pd.DataFrame:
     return table[["TOTAL", *by_volume]].sort_values("TOTAL", ascending=False)
 
 
-def filter_options(conn: sqlite3.Connection) -> dict[str, list[str]]:
+def filter_options(conn) -> dict[str, list[str]]:
     col = lambda sql: [r[0] for r in conn.execute(sql) if r[0]]
     return {
         "clients": col("SELECT DISTINCT client FROM sources ORDER BY client"),
@@ -53,7 +54,7 @@ def filter_options(conn: sqlite3.Connection) -> dict[str, list[str]]:
     }
 
 
-def conflicts(conn: sqlite3.Connection, model: str, threshold: float = 0.95,
+def conflicts(conn, model: str, threshold: float = 0.95,
               limit: int = 500) -> pd.DataFrame:
     """Pairs of near-identical requirements, from different sources, whose answers disagree.
 

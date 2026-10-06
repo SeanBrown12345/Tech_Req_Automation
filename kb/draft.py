@@ -13,7 +13,6 @@ import io
 import json
 import os
 import re
-import sqlite3
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,7 +22,7 @@ import anthropic
 from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string
 
-from kb import settings, store
+from kb import db, settings, store
 from kb.detect import guess_sheet, read_rows
 from kb.embed import Embedder, embedding_text
 from kb.extract import _CHILD_ID, clean, iter_requirements
@@ -194,11 +193,18 @@ CREATE TABLE IF NOT EXISTS rows (
 """
 
 
-def connect_drafts() -> sqlite3.Connection:
-    settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(settings.DRAFTS_DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+_drafts_ready = False  # Postgres: tables created once per process
+
+
+def connect_drafts():
+    """The drafts database: its own SQLite file locally, the shared Postgres database when hosted."""
+    global _drafts_ready
+    conn = db.connect(settings.DRAFTS_DB_PATH)
+    if db.is_postgres(conn):
+        if not _drafts_ready:
+            conn.executescript(DRAFTS_SCHEMA)
+            _drafts_ready = True
+        return conn
     conn.execute("PRAGMA journal_mode = WAL")  # readers (the dashboard) don't block the drafting thread
     conn.executescript(DRAFTS_SCHEMA)
     return conn
@@ -510,7 +516,7 @@ def _run_job(job_id: str, exclude_sources: list[str] | None) -> None:
                 conn.execute("UPDATE jobs SET status = 'done' WHERE job_id = ?", (job_id,))
             return
 
-        kb_conn = store.connect(settings.DB_PATH)
+        kb_conn = store.connect()
         retriever = store.Retriever(kb_conn, Embedder(), {"exclude_sources": exclude_sources or plan.get(
             "exclude_sources") or []})
         queries = [embedding_text(r["requirement"], r["parent_text"]) for r in pending]
