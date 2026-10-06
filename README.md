@@ -44,11 +44,12 @@ knowledge base, which is derived data and safe to rebuild.
 ### Hosting
 ReqFill is served at `<RFP Pilot URL>/ReqFill/`, bundled into RFP Pilot's container (the `Bid_Classification`
 repo, where this repo is the `reqfill` submodule). There, `KB_DATABASE_URL` points the knowledge base and drafts at
-a Postgres database and `KB_DATA_DIR` at an Azure Files share for workbook files; see `DEPLOY.md` in that repo.
-Pushing this repo's `main` does not deploy by itself: the submodule pointer in `Bid_Classification` must be bumped.
+a Postgres database and `KB_DATA_DIR` at an Azure Files share for workbook files. Cloud Shell setup, deploying and
+shipping changes: [docs/azure-setup.md](docs/azure-setup.md). Pushing this repo's `main` does not deploy by itself:
+the submodule pointer in `Bid_Classification` must be bumped.
 
-To move local data into the hosted database once: `python -m kb copy-to-postgres --from <folder with kb.sqlite and
-drafts.sqlite>` with `KB_DATABASE_URL` set (refuses to overwrite existing data without `--replace`).
+`python -m kb copy-to-postgres --from <folder>` can copy a local `kb.sqlite` / `drafts.sqlite` into
+`KB_DATABASE_URL` if that's ever wanted (refuses to overwrite existing data without `--replace`).
 
 ### How drafting decides confidence and cost
 - **Confidence** is the lower of Claude's own rating and a cap from the closest past answer's similarity
