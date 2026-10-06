@@ -1,5 +1,9 @@
 [theme]
-primaryColor = "#2a78d6"
+base = "dark"
+primaryColor = "#3987e5"            # a touch lighter than the light-theme blue, for contrast on dark
+backgroundColor = "#16181D"
+secondaryBackgroundColor = "#22252C"  # inputs, upload boxes, expanders
+textColor = "#E6E8EC"
 
 [server]
 maxUploadSize = 50   # MB

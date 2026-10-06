@@ -43,9 +43,9 @@ if "draft_job_next" in st.session_state:  # set by Start / Delete: switch before
 if "draft_job" not in st.session_state or st.session_state.draft_job not in labels:
     st.session_state.draft_job = NEW
 choice = st.session_state.draft_job
-# An existing draft is titled by its name and client; "Draft a worksheet" only fits starting a new one.
+# An existing draft is titled by its name and client; "New Draft" only fits starting a new one.
 if choice == NEW:
-    st.title("Draft a worksheet")
+    st.title("New Draft")
 else:
     current = jobs.set_index("job_id").loc[choice]
     has_client = isinstance(current.client, str) and current.client.strip()
@@ -121,6 +121,10 @@ st.html(f"""<style>
    start stands out. */
 [data-testid="stMain"] [data-testid="stHeading"] h3 {{
     padding: 0 0 0.6rem; border-bottom: 1px solid rgba(128, 128, 128, 0.25); margin: 0.75rem 0 0.5rem;
+}}
+/* The page title gets the same rule under it. */
+[data-testid="stMain"] [data-testid="stHeading"] h1 {{
+    padding-bottom: 0.6rem; border-bottom: 1px solid rgba(128, 128, 128, 0.25); margin-bottom: 0.5rem;
 }}
 </style>""")
 with st.container(key="draft-field"):
