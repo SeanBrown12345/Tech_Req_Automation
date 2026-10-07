@@ -22,7 +22,7 @@ import anthropic
 from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string
 
-from kb import db, settings, store
+from kb import db, modules, settings, store
 from kb.detect import guess_sheet, read_rows
 from kb.embed import Embedder, embedding_text
 from kb.extract import _CHILD_ID, clean, iter_requirements
@@ -190,8 +190,18 @@ CREATE TABLE IF NOT EXISTS rows (
     assignee     TEXT,                  -- SME responsible for the row; NULL = unassigned
     returned_by  TEXT,                  -- unassigned because this SME handed it back (the "returned" pool)
     return_note  TEXT,                  -- their reason, if they gave one
+    module       TEXT,                  -- product module (kb/modules.py), or General; NULL = not detected yet
     error        TEXT,
     PRIMARY KEY (job_id, sheet, row_num)
+);
+CREATE TABLE IF NOT EXISTS modules (
+    code        TEXT PRIMARY KEY,       -- as stored in rows.module, e.g. CIS
+    description TEXT,
+    position    INTEGER NOT NULL        -- display order
+);
+CREATE TABLE IF NOT EXISTS app_settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT
 );
 CREATE TABLE IF NOT EXISTS people (
     name        TEXT PRIMARY KEY,       -- as shown on the task board and stored in rows.assignee
@@ -203,9 +213,10 @@ CREATE TABLE IF NOT EXISTS people (
 
 
 # Columns added after the first release: existing databases get them on connect.
-_ADDED_COLUMNS = {"rows": {"assignee": "TEXT", "returned_by": "TEXT", "return_note": "TEXT"}}
+_ADDED_COLUMNS = {"rows": {"assignee": "TEXT", "returned_by": "TEXT", "return_note": "TEXT", "module": "TEXT"}}
 
 _drafts_ready = False  # Postgres: tables created once per process
+_sqlite_ready: set = set()  # SQLite files already migrated in this process
 
 
 def _migrate(conn) -> None:
@@ -222,8 +233,20 @@ def _migrate(conn) -> None:
 
 def _sync_people(conn) -> None:
     """Anyone rows are assigned to is an SME: covers rows assigned before the SME list existed."""
-    conn.execute("INSERT INTO people (name, created_at) SELECT DISTINCT assignee, ? FROM rows"
-                 " WHERE assignee IS NOT NULL AND assignee NOT IN (SELECT name FROM people)", (_now(),))
+    with conn:  # commit now: an open write transaction would lock every other connection out
+        conn.execute("INSERT INTO people (name, created_at) SELECT DISTINCT assignee, ? FROM rows"
+                     " WHERE assignee IS NOT NULL AND assignee NOT IN (SELECT name FROM people)", (_now(),))
+
+
+def _seed_modules(conn) -> None:
+    """Load modules.txt into the modules table, once: after that the list is edited in Admin > Modules."""
+    if conn.execute("SELECT 1 FROM app_settings WHERE key = 'modules_seeded'").fetchone():
+        return
+    with conn:
+        if not conn.execute("SELECT 1 FROM modules").fetchone():
+            conn.executemany("INSERT INTO modules (code, description, position) VALUES (?, ?, ?)",
+                             [(code, description, i) for i, (code, description) in enumerate(modules.from_file())])
+        conn.execute("INSERT INTO app_settings (key, value) VALUES ('modules_seeded', ?)", (_now(),))
 
 
 def _now() -> str:
@@ -239,12 +262,16 @@ def connect_drafts():
             conn.executescript(DRAFTS_SCHEMA)
             _migrate(conn)
             _sync_people(conn)
+            _seed_modules(conn)
             _drafts_ready = True
         return conn
     conn.execute("PRAGMA journal_mode = WAL")  # readers (the dashboard) don't block the drafting thread
     conn.executescript(DRAFTS_SCHEMA)
-    _migrate(conn)
-    _sync_people(conn)
+    if settings.DRAFTS_DB_PATH not in _sqlite_ready:  # one-off upkeep, once per process
+        _migrate(conn)
+        _sync_people(conn)
+        _seed_modules(conn)
+        _sqlite_ready.add(settings.DRAFTS_DB_PATH)
     return conn
 
 
@@ -591,6 +618,11 @@ def _run_job(job_id: str, exclude_sources: list[str] | None) -> None:
 
         remaining = conn.execute("SELECT COUNT(*) FROM rows WHERE job_id = ? AND ai IS NULL", (job_id,)).fetchone()[0]
         stopped = conn_status(job_id) == "stopping"
+        if not stopped:
+            try:
+                detect_modules(job_id, llm)
+            except Exception:  # noqa: BLE001 - modules are a convenience; "Detect modules" can retry
+                pass
         status = "done" if remaining == 0 else ("ready" if stopped else "error")
         message = None if remaining == 0 else (
             f"Stopped with {remaining} rows left." if stopped else f"{remaining} rows failed; use Resume to retry them.")
@@ -634,6 +666,36 @@ def save_review(job_id: str, sheet: str, row_num: int, final: dict | None = None
         if reviewed is not None:
             conn.execute("UPDATE rows SET reviewed = ? WHERE job_id = ? AND sheet = ? AND row_num = ?",
                          (int(reviewed), job_id, sheet, row_num))
+    conn.close()
+
+
+def detect_modules(job_id: str, llm=None, progress=None) -> int:
+    """Set the module of drafted rows that don't have one yet; returns how many are still missing."""
+    conn = connect_drafts()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT sheet, row_num, requirement, parent_text, context, evidence FROM rows"
+            " WHERE job_id = ? AND ai IS NOT NULL AND module IS NULL ORDER BY sheet, row_num", (job_id,))]
+        if not rows or not modules.load():
+            return len(rows)
+        kb_conn = store.connect()
+        try:
+            found = modules.classify(llm or anthropic.Anthropic(max_retries=4), MODEL, kb_conn, rows, progress)
+        finally:
+            kb_conn.close()
+        with conn:
+            conn.executemany("UPDATE rows SET module = ? WHERE job_id = ? AND sheet = ? AND row_num = ?",
+                             [(m, job_id, sheet, n) for (sheet, n), m in found.items()])
+        return len(rows) - len(found)
+    finally:
+        conn.close()
+
+
+def set_module(job_id: str, sheet: str, row_nums: list[int], module: str) -> None:
+    conn = connect_drafts()
+    with conn:
+        conn.executemany("UPDATE rows SET module = ? WHERE job_id = ? AND sheet = ? AND row_num = ?",
+                         [(module, job_id, sheet, int(n)) for n in row_nums])
     conn.close()
 
 

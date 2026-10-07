@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from app.common import STATUS_LABELS, status_badge, status_label
-from kb import draft
+from kb import draft, modules
 
 CONF_LABELS = {"high": "High", "medium": "Medium", "low": "Low"}
 
@@ -37,6 +37,7 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
     if saved := st.session_state.pop("grid_saved", 0):
         st.toast(f"Saved {saved} change{'s' if saved > 1 else ''}")
     sheet = sheet_plan["name"]
+    module_names = modules.names() if modules.load() else []
     fields = [f for f in sheet_plan["fields"] if f.get("include", True)]
     answers = [json.loads(f if isinstance(f, str) else a) for f, a in zip(view.final, view.ai)]  # edits, else AI
     frame = pd.DataFrame({
@@ -45,6 +46,7 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
         "Requirement": [f"{r}  (under: {p})" if isinstance(p, str) and p else r
                         for p, r in zip(view.parent_text, view.requirement)],
         **({"Unassigned by": view.returned_by.values} if returned else {}),
+        **({"Module": [name_or_none(m) for m in view.module]} if module_names else {}),
         **{f["label"]: [a.get(f["key"], "") if f["key"] in json.loads(fl) else None
                         for a, fl in zip(answers, view.fill)] for f in fields},
         "Confidence": view.confidence.map(CONF_LABELS).values,
@@ -62,6 +64,8 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
         "Assigned to": st.column_config.SelectboxColumn(
             options=draft.people(), help="SMEs are added under **Admin › SMEs**"),
         "Approved": st.column_config.CheckboxColumn(width="small", help="The SME is happy with this answer"),
+        "Module": st.column_config.SelectboxColumn(options=module_names, width="small",
+                                                   help="Product module the requirement belongs to"),
     }
     for f in fields:
         if f["kind"] == "choice":
@@ -87,6 +91,8 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
             draft.save_review(job_id, sheet, row_num, cost_impact=bool(after.Cost))
         if bool(after.Approved) != bool(before.Approved):
             draft.save_review(job_id, sheet, row_num, reviewed=bool(after.Approved))
+        if module_names and name_or_none(after.Module) not in (None, name_or_none(before.Module)):
+            draft.set_module(job_id, sheet, [row_num], after.Module)
         if name_or_none(after["Assigned to"]) != name_or_none(before["Assigned to"]):
             draft.assign(job_id, sheet, [row_num], name_or_none(after["Assigned to"]))
         changed += not after.equals(before)

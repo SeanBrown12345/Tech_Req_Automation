@@ -7,7 +7,7 @@ import streamlit as st
 
 from app import review_grid
 from app.admin_layout import ACCENT
-from kb import db, draft
+from kb import db, draft, modules
 
 KIND_LABELS = {"choice": "Pick from list", "text": "Free text", "marks": "Mark one column"}
 
@@ -303,6 +303,32 @@ def _job_page(job_id: str):
 
     # ---- Review grid ----
     st.subheader("Review")
+    # Progress across the whole draft (every sheet), before the filters narrow the grid.
+    approved = int(done.reviewed.sum())
+    unassigned = done.assignee.isna()
+    r = st.columns(5)
+    r[0].metric("Approved", f"{approved:,}", help="Rows an SME has approved")
+    r[1].metric("Not approved", f"{len(done) - approved:,}", help="Rows still waiting for review")
+    r[2].metric("Unassigned", f"{int((unassigned & done.returned_by.isna()).sum()):,}",
+                help="Never assigned to an SME")
+    r[3].metric("Unassigned by an SME", f"{int((unassigned & done.returned_by.notna()).sum()):,}",
+                help="Sent back by an SME as out of their area, waiting to be reassigned")
+    r[4].metric("SMEs", done.assignee.nunique(), help="People with rows assigned on this draft")
+    if modules.load() and (undetected := int(done.module.isna().sum())):
+        with st.container(border=True, horizontal=True, vertical_alignment="center"):
+            st.markdown(f"**{undetected:,}** rows don't have a module yet. Detecting them lets you filter and "
+                        "assign by module.", width="stretch")
+            if st.button("Detect modules", icon=":material/category:", type="primary", key=f"modules:{job_id}"):
+                with st.status("Detecting modules...") as status:
+                    bar = st.progress(0.0)
+                    missing = draft.detect_modules(job_id, progress=lambda d, t: bar.progress(d / t))
+                    status.update(label="Modules detected", state="complete")
+                if missing:
+                    st.session_state.modules_note = f"{missing:,} rows couldn't be classified; try again."
+                review_grid.refresh()
+                st.rerun()
+    if note := st.session_state.pop("modules_note", None):
+        st.warning(note)
     sheets = [s for s in dict.fromkeys(done.sheet)]
     # The Sheet picker only exists for multi-sheet drafts; without it, Show and Find start at the left.
     if len(sheets) > 1:
@@ -330,9 +356,18 @@ def _job_page(job_id: str):
                   if len({c.get(lv) for c in contexts} - {None}) > 1), None)
     view["section"] = [c.get(level) if level else None for c in contexts]
     sections = sorted(set(view.section) - {None}, key=str.lower)
-    g1, g2, g3 = st.columns([3, 2, 2], vertical_alignment="bottom")
+    g1, gm, g2 = st.columns([3, 2, 2], vertical_alignment="bottom")
     section = g1.selectbox("Section", ["All sections", *sections], key=f"section:{job_id}:{sheet}",
                            disabled=not sections)
+    module_names = modules.names() if modules.load() else []
+    counts = view.module.value_counts()
+    NO_MODULE = "Not detected yet"
+    module_options = ["All modules", *[m for m in module_names if m in counts],
+                      *([NO_MODULE] if view.module.isna().any() else [])]
+    module = gm.selectbox("Module", module_options, key=f"module:{job_id}:{sheet}", disabled=not module_names,
+                          format_func=lambda o: f"{o} ({int(counts.get(o, 0)):,})" if o in counts else o,
+                          help="The product module each requirement belongs to; set by **Detect modules**, "
+                               "or change it in the grid's Module column. The list is in **Admin › Modules**.")
     UNASSIGNED, RETURNED = "Never assigned", "Unassigned by an SME"
     n_returned = int((view.assignee.isna() & view.returned_by.notna()).sum())
     who = g2.selectbox("Assigned to", ["Anyone", UNASSIGNED, RETURNED, *draft.people()], key=f"who:{job_id}",
@@ -350,6 +385,10 @@ def _job_page(job_id: str):
         view = view[view.reviewed == 0]
     if section != "All sections":
         view = view[view.section == section]
+    if module == NO_MODULE:
+        view = view[view.module.isna()]
+    elif module != "All modules":
+        view = view[view.module == module]
     if who == UNASSIGNED:
         view = view[view.assignee.isna() & view.returned_by.isna()]
     elif who == RETURNED:
@@ -359,8 +398,16 @@ def _job_page(job_id: str):
     if text:
         view = view[view.requirement.str.contains(text, case=False, regex=False)]
 
-    with g3.popover(f"Assign {len(view):,} shown row{'s' if len(view) != 1 else ''}", width="stretch",
-                    icon=":material/person_add:", disabled=view.empty):
+    if view.empty:
+        st.caption("No rows match.")
+        return
+    review_grid.grid(job_id, sp, view, key=f"{job_id}:{sheet}:{show}:{section}:{module}:{who}:{text}",
+                     returned=who == RETURNED)
+
+    # Bulk actions on the rows the grid shows.
+    actions = st.container(horizontal=True)
+    with actions.popover(f"Assign {len(view):,} shown row{'s' if len(view) != 1 else ''}",
+                         icon=":material/person_add:"):
         st.caption("Narrow the grid with the filters (Find works for a single row), then give every row "
                    "it shows to one person. They'll find them on the **Task board**.")
         name = st.selectbox("Person", draft.people(), index=None, placeholder="Pick an SME",
@@ -375,12 +422,16 @@ def _job_page(job_id: str):
             draft.assign(job_id, sheet, view.row_num.tolist(), None)
             review_grid.refresh()
             st.rerun()
-
-    if view.empty:
-        st.caption("No rows match.")
-        return
-    review_grid.grid(job_id, sp, view, key=f"{job_id}:{sheet}:{show}:{section}:{who}:{text}",
-                     returned=who == RETURNED)
+    if module_names:
+        with actions.popover("Set module", icon=":material/category:"):
+            st.caption(f"Put all {len(view):,} shown rows in one module.")
+            new_module = st.selectbox("Module", module_names, index=None, placeholder="Pick a module",
+                                      key=f"set-module:{job_id}")
+            if st.button("Set module", type="primary", width="stretch", disabled=not new_module,
+                         key=f"set-module-go:{job_id}"):
+                draft.set_module(job_id, sheet, view.row_num.tolist(), new_module)
+                review_grid.refresh()
+                st.rerun()
 
     # ---- Answer details ----
     st.subheader("Answer details")

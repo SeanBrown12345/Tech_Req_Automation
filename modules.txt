@@ -1,0 +1,10 @@
+CIS - Customer Information System
+FMS - Financial Management System
+ERP - Enterprise Resource Planning
+WMS - Work management system
+MDM - Meter Data Management
+HCM - Human Capital Management
+CEP/CSS - Customer Engagement Portal/ Customer Self-Service
+EBPP / digital bill payment - Electronic Bill Presentment and Payment
+OCM - Organizational Change Management
+MWFM - Mobile Workforce Management

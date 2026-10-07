@@ -24,8 +24,11 @@ kb_admin = [
     st.Page(views / "add_worksheet.py", title="Add worksheet", icon=":material/upload_file:", url_path="add_worksheet"),
     st.Page(views / "conflicts.py", title="Conflicts", icon=":material/compare_arrows:", url_path="conflicts"),
 ]
-team_admin = [st.Page(views / "smes.py", title="SMEs", icon=":material/group:", url_path="smes")]
-admin = kb_admin + team_admin
+review_admin = [
+    st.Page(views / "smes.py", title="SMEs", icon=":material/group:", url_path="smes"),
+    st.Page(views / "module_list.py", title="Modules", icon=":material/category:", url_path="modules"),
+]
+admin = kb_admin + review_admin
 page = st.navigation([draft, board, *admin], position="hidden")
 in_admin = page.url_path in {p.url_path for p in admin}
 render_header(draft, board, admin[0], in_admin)
@@ -35,7 +38,7 @@ st.html("<style>section[data-testid='stSidebar'], [data-testid='stExpandSidebarB
         " [data-testid='stSidebarCollapsedControl'] { display: none !important; }</style>")
 
 if in_admin:
-    with admin_layout({"KNOWLEDGE BASE": kb_admin, "TEAM": team_admin}, page):
+    with admin_layout({"KNOWLEDGE BASE": kb_admin, "REVIEW": review_admin}, page):
         page.run()
 else:
     page.run()

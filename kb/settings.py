@@ -18,6 +18,7 @@ load_dotenv(ROOT / ".env", override=False)  # real environment variables win ove
 CONFIG_DIR = ROOT / "config"
 SCALES_FILE = CONFIG_DIR / "scales.yaml"
 REPO_PROFILES_DIR = CONFIG_DIR / "profiles"   # profiles kept in git; `file` relative to ROOT
+MODULES_FILE = ROOT / "modules.txt"            # product modules rows are sorted into (kb/modules.py)
 
 DATA_DIR = Path(os.environ.get("KB_DATA_DIR", ROOT / "data"))
 DATABASE_URL = os.environ.get("KB_DATABASE_URL") or None

@@ -219,6 +219,8 @@ def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str) -> Non
         status_badge(r.status)
         st.badge(f"{review_grid.CONF_LABELS.get(r.confidence)} confidence",
                  color={"low": "red", "medium": "orange", "high": "green"}.get(r.confidence, "gray"))
+        if isinstance(r.module, str) and r.module:
+            st.badge(r.module, icon=":material/category:", color="blue")
         if r.reviewed:
             st.badge("Approved", icon=":material/check:", color="green")
 

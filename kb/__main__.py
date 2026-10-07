@@ -106,7 +106,7 @@ def cmd_copy_to_postgres(args, conn):
         return 1
     drafts_conn = draft.connect_drafts()
     targets = {"sources": conn, "records": conn, "embeddings": conn, "jobs": drafts_conn, "rows": drafts_conn,
-               "people": drafts_conn}
+               "people": drafts_conn, "modules": drafts_conn}
     if not args.replace:
         filled = [t for t in ("sources", "jobs") if targets[t].execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]]
         if filled:
@@ -115,14 +115,15 @@ def cmd_copy_to_postgres(args, conn):
 
     sources = {"sources": args.src / "kb.sqlite", "records": args.src / "kb.sqlite",
                "embeddings": args.src / "kb.sqlite", "jobs": args.src / "drafts.sqlite",
-               "rows": args.src / "drafts.sqlite", "people": args.src / "drafts.sqlite"}
+               "rows": args.src / "drafts.sqlite", "people": args.src / "drafts.sqlite",
+               "modules": args.src / "drafts.sqlite"}
     # Only vectors some record uses; old ones from removed worksheets stay behind.
     where = {"embeddings": " WHERE text_sha IN (SELECT embed_sha FROM records)"}
     with conn, drafts_conn:
-        for table in ("people", "rows", "jobs", "records", "sources"):  # children before parents
+        for table in ("modules", "people", "rows", "jobs", "records", "sources"):  # children before parents
             targets[table].execute(f"DELETE FROM {table}")
         conn.execute("DELETE FROM embeddings")
-        for table in ("sources", "records", "embeddings", "jobs", "rows", "people"):
+        for table in ("sources", "records", "embeddings", "jobs", "rows", "people", "modules"):
             path = sources[table]
             if not path.exists():
                 print(f"  {table:<10} skipped ({path} not found)")
