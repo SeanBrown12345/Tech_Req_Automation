@@ -105,7 +105,8 @@ def cmd_copy_to_postgres(args, conn):
         print("Set KB_DATABASE_URL to the target Postgres database first.")
         return 1
     drafts_conn = draft.connect_drafts()
-    targets = {"sources": conn, "records": conn, "embeddings": conn, "jobs": drafts_conn, "rows": drafts_conn}
+    targets = {"sources": conn, "records": conn, "embeddings": conn, "jobs": drafts_conn, "rows": drafts_conn,
+               "people": drafts_conn}
     if not args.replace:
         filled = [t for t in ("sources", "jobs") if targets[t].execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]]
         if filled:
@@ -114,14 +115,14 @@ def cmd_copy_to_postgres(args, conn):
 
     sources = {"sources": args.src / "kb.sqlite", "records": args.src / "kb.sqlite",
                "embeddings": args.src / "kb.sqlite", "jobs": args.src / "drafts.sqlite",
-               "rows": args.src / "drafts.sqlite"}
+               "rows": args.src / "drafts.sqlite", "people": args.src / "drafts.sqlite"}
     # Only vectors some record uses; old ones from removed worksheets stay behind.
     where = {"embeddings": " WHERE text_sha IN (SELECT embed_sha FROM records)"}
     with conn, drafts_conn:
-        for table in ("rows", "jobs", "records", "sources"):  # children before parents
+        for table in ("people", "rows", "jobs", "records", "sources"):  # children before parents
             targets[table].execute(f"DELETE FROM {table}")
         conn.execute("DELETE FROM embeddings")
-        for table in ("sources", "records", "embeddings", "jobs", "rows"):
+        for table in ("sources", "records", "embeddings", "jobs", "rows", "people"):
             path = sources[table]
             if not path.exists():
                 print(f"  {table:<10} skipped ({path} not found)")
@@ -132,6 +133,10 @@ def cmd_copy_to_postgres(args, conn):
                 "SELECT column_name FROM information_schema.columns WHERE table_name = ?"
                 " AND is_generated = 'NEVER'", (table,))}
             columns = [r[1] for r in src.execute(f"PRAGMA table_info({table})") if r[1] in wanted]
+            if not columns:  # a file from before this table existed
+                src.close()
+                print(f"  {table:<10} skipped (not in {path.name})")
+                continue
             rows = src.execute(f"SELECT {', '.join(columns)} FROM {table}{where.get(table, '')}").fetchall()
             src.close()
             targets[table].executemany(

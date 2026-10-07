@@ -1,5 +1,5 @@
-"""Top banner shared with our other apps: company logo (links home), separator, app name, and a gear
-that opens the knowledge-base admin pages."""
+"""Top banner shared with our other apps: company logo (links home), separator, app name, and on the
+right a link to the task board and a gear that opens the knowledge-base admin pages."""
 
 import base64
 from pathlib import Path
@@ -44,9 +44,9 @@ section[data-testid="stSidebar"] {{ top: {BANNER_HEIGHT}; height: calc(100vh - {
 [data-testid="stAppViewContainer"] > section.main {{ margin-top: {BANNER_HEIGHT}; }}
 /* The banner is fixed, so its own (empty) slot in the page flow shouldn't take space. */
 [data-testid="stElementContainer"]:has(.app-top-banner) {{ position: absolute; height: 0; margin: 0; }}
-/* Gear: a real Streamlit page link (no page reload), pinned into the banner's right side. */
+/* Task board and gear: real Streamlit page links (no page reload), pinned into the banner's right side. */
 .st-key-reqfill-gear {{
-    position: fixed; top: 0; right: 1rem; z-index: 1000061; width: auto; gap: 0;
+    position: fixed; top: 0; right: 1rem; z-index: 1000061; width: auto; gap: 0.25rem;
 }}
 .st-key-reqfill-gear [data-testid="stElementContainer"], .st-key-reqfill-gear [data-testid="stPageLink"] {{
     margin: 0; padding: 0;
@@ -79,9 +79,9 @@ section[data-testid="stSidebar"] {{ top: {BANNER_HEIGHT}; height: calc(100vh - {
 """
 
 
-def render_header(home_page, admin_page, in_admin: bool = False) -> None:
-    """Draw the banner; the logo links to `home_page` and the gear to `admin_page` (st.Page objects).
-    On the admin pages the gear becomes a back arrow to `home_page`."""
+def render_header(home_page, board_page, admin_page, in_admin: bool = False) -> None:
+    """Draw the banner; the logo links to `home_page`, the task icon to `board_page` and the gear to
+    `admin_page` (st.Page objects). On the admin pages the gear becomes a back arrow to `home_page`."""
     st.html(
         _CSS
         + f'<div class="app-top-banner"><span class="app-top-logo" role="img" aria-label="Cayenta"></span>'
@@ -90,8 +90,9 @@ def render_header(home_page, admin_page, in_admin: bool = False) -> None:
     )
     with st.container(key="reqfill-home"):
         st.page_link(home_page, label="Home")
-    with st.container(key="reqfill-gear"):
+    with st.container(key="reqfill-gear", horizontal=True):
+        st.page_link(board_page, label="Task board", icon=":material/assignment_ind:", help="Task board")
         if in_admin:
             st.page_link(home_page, label="Back to drafting", icon=":material/arrow_back:")
         else:
-            st.page_link(admin_page, label="Knowledge base admin", icon=":material/settings:")
+            st.page_link(admin_page, label="Admin", icon=":material/settings:")

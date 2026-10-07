@@ -186,14 +186,48 @@ CREATE TABLE IF NOT EXISTS rows (
     cost_note    TEXT,
     rationale    TEXT,
     evidence     TEXT,                  -- JSON list of past answers shown to the model
-    reviewed     INTEGER NOT NULL DEFAULT 0,
+    reviewed     INTEGER NOT NULL DEFAULT 0,  -- approved by the SME (or whoever reviewed it)
+    assignee     TEXT,                  -- SME responsible for the row; NULL = unassigned
+    returned_by  TEXT,                  -- unassigned because this SME handed it back (the "returned" pool)
+    return_note  TEXT,                  -- their reason, if they gave one
     error        TEXT,
     PRIMARY KEY (job_id, sheet, row_num)
+);
+CREATE TABLE IF NOT EXISTS people (
+    name        TEXT PRIMARY KEY,       -- as shown on the task board and stored in rows.assignee
+    email       TEXT,
+    areas       TEXT,                   -- what they review, to help whoever assigns rows
+    created_at  TEXT NOT NULL
 );
 """
 
 
+# Columns added after the first release: existing databases get them on connect.
+_ADDED_COLUMNS = {"rows": {"assignee": "TEXT", "returned_by": "TEXT", "return_note": "TEXT"}}
+
 _drafts_ready = False  # Postgres: tables created once per process
+
+
+def _migrate(conn) -> None:
+    for table, columns in _ADDED_COLUMNS.items():
+        if db.is_postgres(conn):
+            for name, kind in columns.items():
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {kind}")
+            continue
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, kind in columns.items():
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+
+
+def _sync_people(conn) -> None:
+    """Anyone rows are assigned to is an SME: covers rows assigned before the SME list existed."""
+    conn.execute("INSERT INTO people (name, created_at) SELECT DISTINCT assignee, ? FROM rows"
+                 " WHERE assignee IS NOT NULL AND assignee NOT IN (SELECT name FROM people)", (_now(),))
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def connect_drafts():
@@ -203,10 +237,14 @@ def connect_drafts():
     if db.is_postgres(conn):
         if not _drafts_ready:
             conn.executescript(DRAFTS_SCHEMA)
+            _migrate(conn)
+            _sync_people(conn)
             _drafts_ready = True
         return conn
     conn.execute("PRAGMA journal_mode = WAL")  # readers (the dashboard) don't block the drafting thread
     conn.executescript(DRAFTS_SCHEMA)
+    _migrate(conn)
+    _sync_people(conn)
     return conn
 
 
@@ -582,9 +620,14 @@ def conn_status(job_id: str) -> str | None:
 # ================================================================================================
 
 def save_review(job_id: str, sheet: str, row_num: int, final: dict | None = None,
-                reviewed: bool | None = None) -> None:
+                reviewed: bool | None = None, cost_impact: bool | None = None) -> None:
+    """Save a reviewer's changes: edited answers, approval, and the pricing flag (which starts as the
+    AI's "may add cost" judgement and drives the yellow highlight in the download)."""
     conn = connect_drafts()
     with conn:
+        if cost_impact is not None:
+            conn.execute("UPDATE rows SET cost_impact = ? WHERE job_id = ? AND sheet = ? AND row_num = ?",
+                         (int(cost_impact), job_id, sheet, row_num))
         if final is not None:
             conn.execute("UPDATE rows SET final = ? WHERE job_id = ? AND sheet = ? AND row_num = ?",
                          (json.dumps(final), job_id, sheet, row_num))
@@ -592,6 +635,99 @@ def save_review(job_id: str, sheet: str, row_num: int, final: dict | None = None
             conn.execute("UPDATE rows SET reviewed = ? WHERE job_id = ? AND sheet = ? AND row_num = ?",
                          (int(reviewed), job_id, sheet, row_num))
     conn.close()
+
+
+def assign(job_id: str, sheet: str, row_nums: list[int], assignee: str | None) -> None:
+    """Give rows to an SME (None = unassign). Either way they leave the returned pool."""
+    conn = connect_drafts()
+    with conn:
+        conn.executemany("UPDATE rows SET assignee = ?, returned_by = NULL, return_note = NULL"
+                         " WHERE job_id = ? AND sheet = ? AND row_num = ?",
+                         [(assignee, job_id, sheet, int(n)) for n in row_nums])
+    conn.close()
+
+
+def return_row(job_id: str, sheet: str, row_num: int, by: str, note: str | None = None) -> None:
+    """An SME hands a row back as not theirs: it goes to the returned pool (kept apart from rows never
+    assigned) until someone reassigns it."""
+    conn = connect_drafts()
+    with conn:
+        conn.execute("UPDATE rows SET assignee = NULL, returned_by = ?, return_note = ?"
+                     " WHERE job_id = ? AND sheet = ? AND row_num = ?", (by, note or None, job_id, sheet, row_num))
+    conn.close()
+
+
+# ================================================================================================
+# SMEs: the people rows can be assigned to
+# ================================================================================================
+
+def people() -> list[str]:
+    """SME names, alphabetically."""
+    conn = connect_drafts()
+    try:
+        return [r[0] for r in conn.execute("SELECT name FROM people ORDER BY LOWER(name)")]
+    finally:
+        conn.close()
+
+
+def people_table() -> "pd.DataFrame":
+    """SMEs with how many rows they have open and approved, across all drafts."""
+    conn = connect_drafts()
+    try:
+        return db.read_sql(conn, """
+            SELECT p.name, p.email, p.areas,
+                   COUNT(CASE WHEN r.reviewed = 0 THEN 1 END) AS open,
+                   COUNT(CASE WHEN r.reviewed = 1 THEN 1 END) AS approved
+            FROM people p LEFT JOIN rows r ON r.assignee = p.name
+            GROUP BY p.name, p.email, p.areas ORDER BY LOWER(p.name)""")
+    finally:
+        conn.close()
+
+
+def add_person(name: str, email: str | None = None, areas: str | None = None) -> bool:
+    """Add an SME; False if the name is already taken (names are compared ignoring case)."""
+    conn = connect_drafts()
+    try:
+        with conn:
+            if conn.execute("SELECT 1 FROM people WHERE LOWER(name) = LOWER(?)", (name,)).fetchone():
+                return False
+            conn.execute("INSERT INTO people (name, email, areas, created_at) VALUES (?, ?, ?, ?)",
+                         (name, email or None, areas or None, _now()))
+        return True
+    finally:
+        conn.close()
+
+
+def update_person(old_name: str, name: str, email: str | None, areas: str | None) -> bool:
+    """Edit an SME. A new name follows them onto their rows. False if the new name is someone else's."""
+    conn = connect_drafts()
+    try:
+        with conn:
+            if name.lower() != old_name.lower() and conn.execute(
+                    "SELECT 1 FROM people WHERE LOWER(name) = LOWER(?)", (name,)).fetchone():
+                return False
+            conn.execute("UPDATE people SET name = ?, email = ?, areas = ? WHERE name = ?",
+                         (name, email or None, areas or None, old_name))
+            if name != old_name:
+                conn.execute("UPDATE rows SET assignee = ? WHERE assignee = ?", (name, old_name))
+                conn.execute("UPDATE rows SET returned_by = ? WHERE returned_by = ?", (name, old_name))
+        return True
+    finally:
+        conn.close()
+
+
+def remove_person(name: str) -> None:
+    """Remove an SME. Their rows still to review go to the pool of rows unassigned by an SME, for the bid
+    manager to reassign; rows they approved stay approved but no longer carry their name."""
+    conn = connect_drafts()
+    try:
+        with conn:
+            conn.execute("UPDATE rows SET assignee = NULL, returned_by = ?, return_note = 'Removed from the SME list'"
+                         " WHERE assignee = ? AND reviewed = 0", (name, name))
+            conn.execute("UPDATE rows SET assignee = NULL WHERE assignee = ?", (name,))
+            conn.execute("DELETE FROM people WHERE name = ?", (name,))
+    finally:
+        conn.close()
 
 
 def delete_job(job_id: str) -> None:

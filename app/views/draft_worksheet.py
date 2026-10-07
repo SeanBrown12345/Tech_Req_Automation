@@ -5,12 +5,11 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from app import review_grid
 from app.admin_layout import ACCENT
-from app.common import STATUS_LABELS, status_badge, status_label
 from kb import db, draft
 
 KIND_LABELS = {"choice": "Pick from list", "text": "Free text", "marks": "Mark one column"}
-CONF_LABELS = {"high": "High", "medium": "Medium", "low": "Low"}
 
 # Keep the page readable on wide screens instead of stretching edge to edge.
 st.html("<style>[data-testid='stMainBlockContainer'] { max-width: 1200px; margin: 0 auto; }</style>")
@@ -281,7 +280,8 @@ def _job_page(job_id: str):
     m = st.columns(3)
     m[0].metric("Drafted", f"{len(done):,}")
     m[1].metric("Low confidence", int((done.confidence == "low").sum()), help="Highlighted red in the download")
-    m[2].metric("May add cost", int(done.cost_impact.sum()), help="Highlighted yellow in the download")
+    m[2].metric("Needs pricing", int(done.cost_impact.sum()),
+                help="May add implementation cost. Highlighted yellow in the download")
 
     # ---- Download ----
     st.html(f"""<style>
@@ -293,7 +293,7 @@ def _job_page(job_id: str):
         d1, d2, d3 = st.columns([2, 2, 2], vertical_alignment="center")
         red = d1.toggle("Red: low-confidence answers", value=True, key=f"red:{job_id}",
                         help="Fills the answer cells of low-confidence rows.")
-        yellow = d2.toggle("Yellow: may add cost", value=True, key=f"yellow:{job_id}",
+        yellow = d2.toggle("Yellow: needs pricing", value=True, key=f"yellow:{job_id}",
                            help="Fills the requirement cell of rows that may add implementation cost.")
         # The file is built when clicked, so it always has the latest edits and highlight choices.
         d3.download_button("Download", lambda: draft.build_output(job_id, red, yellow), type="primary",
@@ -311,89 +311,80 @@ def _job_page(job_id: str):
     else:
         f2, f3, _ = st.columns([2, 3, 2])
         sheet = sheets[0]
-    show = f2.selectbox("Show", ["All", "Low confidence", "May add cost", "Errors"], key=f"show:{job_id}")
+    show = f2.selectbox("Show", ["All", "Low confidence", "Needs pricing", "Approved", "Not approved", "Errors"],
+                        key=f"show:{job_id}")
     text = f3.text_input("Find", key=f"find:{job_id}", placeholder="Search requirement text")
 
     sp = next(s for s in plan["sheets"] if s["name"] == sheet)
-    fields = [f for f in sp["fields"] if f.get("include", True)]
     view = rows[rows.sheet == sheet].copy()
     if show == "Errors":
         view = view[view.error.notna() & view.ai.isna()]
         st.dataframe(view[["row_num", "req_id", "requirement", "error"]], hide_index=True, width="stretch")
         return
     view = view[view.ai.notna()]
+
+    # Sections and assignees narrow the grid, so a block of rows can be handed to one SME in one go.
+    # A section is the coarsest heading level that varies in this sheet (worksheets use different ones).
+    contexts = [json.loads(c) if isinstance(c, str) and c else {} for c in view.context]
+    level = next((lv for lv in ("category", "section", "subcategory")
+                  if len({c.get(lv) for c in contexts} - {None}) > 1), None)
+    view["section"] = [c.get(level) if level else None for c in contexts]
+    sections = sorted(set(view.section) - {None}, key=str.lower)
+    g1, g2, g3 = st.columns([3, 2, 2], vertical_alignment="bottom")
+    section = g1.selectbox("Section", ["All sections", *sections], key=f"section:{job_id}:{sheet}",
+                           disabled=not sections)
+    UNASSIGNED, RETURNED = "Never assigned", "Unassigned by an SME"
+    n_returned = int((view.assignee.isna() & view.returned_by.notna()).sum())
+    who = g2.selectbox("Assigned to", ["Anyone", UNASSIGNED, RETURNED, *draft.people()], key=f"who:{job_id}",
+                       format_func=lambda o: f"{o} ({n_returned})" if o == RETURNED else o,
+                       help="**Unassigned by an SME**: rows an SME sent back as out of their area, waiting to be "
+                            "reassigned. Kept apart from rows never assigned.")
+
     if show == "Low confidence":
         view = view[view.confidence == "low"]
-    elif show == "May add cost":
+    elif show == "Needs pricing":
         view = view[view.cost_impact == 1]
+    elif show == "Approved":
+        view = view[view.reviewed == 1]
+    elif show == "Not approved":
+        view = view[view.reviewed == 0]
+    if section != "All sections":
+        view = view[view.section == section]
+    if who == UNASSIGNED:
+        view = view[view.assignee.isna() & view.returned_by.isna()]
+    elif who == RETURNED:
+        view = view[view.assignee.isna() & view.returned_by.notna()]
+    elif who != "Anyone":
+        view = view[view.assignee == who]
     if text:
         view = view[view.requirement.str.contains(text, case=False, regex=False)]
+
+    with g3.popover(f"Assign {len(view):,} shown row{'s' if len(view) != 1 else ''}", width="stretch",
+                    icon=":material/person_add:", disabled=view.empty):
+        st.caption("Narrow the grid with the filters (Find works for a single row), then give every row "
+                   "it shows to one person. They'll find them on the **Task board**.")
+        name = st.selectbox("Person", draft.people(), index=None, placeholder="Pick an SME",
+                            key=f"assign-to:{job_id}")
+        st.caption("Someone missing? Add them under **Admin › SMEs** (the gear, top right).")
+        a1, a2 = st.columns(2)
+        if a1.button("Assign", type="primary", width="stretch", disabled=not name, key=f"assign:{job_id}"):
+            draft.assign(job_id, sheet, view.row_num.tolist(), name.strip())
+            review_grid.refresh()
+            st.rerun()
+        if a2.button("Unassign", width="stretch", key=f"unassign:{job_id}"):
+            draft.assign(job_id, sheet, view.row_num.tolist(), None)
+            review_grid.refresh()
+            st.rerun()
+
     if view.empty:
         st.caption("No rows match.")
         return
-
-    answers = [json.loads(f or a) for f, a in zip(view.final.where(view.final.notna(), None), view.ai)]
-    grid = pd.DataFrame({
-        "Row": view.row_num.values,
-        "ID": view.req_id.values,
-        "Requirement": [f"{r}  (under: {p})" if isinstance(p, str) and p else r
-                        for p, r in zip(view.parent_text, view.requirement)],
-        **{f["label"]: [a.get(f["key"], "") if f["key"] in json.loads(fl) else None
-                        for a, fl in zip(answers, view.fill)] for f in fields},
-        "Confidence": view.confidence.map(CONF_LABELS).values,
-        "Cost": view.cost_impact.astype(bool).values,
-        "Status": view.status.map(status_label).values,
-    })
-    config = {
-        "Row": st.column_config.NumberColumn(width="small"),
-        "Requirement": st.column_config.TextColumn(width="large"),
-        "Confidence": st.column_config.TextColumn(width="small"),
-        "Cost": st.column_config.CheckboxColumn("May add cost", width="small"),
-    }
-    for f in fields:
-        if f["kind"] == "choice":
-            config[f["label"]] = st.column_config.SelectboxColumn(options=f["options"])
-        elif f["kind"] == "marks":
-            config[f["label"]] = st.column_config.SelectboxColumn(options=[f["labels"][c] for c in f["columns"]])
-        else:
-            config[f["label"]] = st.column_config.TextColumn(width="large")
-    edited = st.data_editor(grid, hide_index=True, width="stretch", height=520, column_config=config,
-                            disabled=["Row", "ID", "Requirement", "Confidence", "Cost", "Status"],
-                            key=f"grid:{job_id}:{sheet}:{show}:{text}")
-
-    # Persist edits.
-    changed = 0
-    for (_, before), (_, after), fill in zip(grid.iterrows(), edited.iterrows(), view.fill):
-        keys = json.loads(fill)
-        new_values = {f["key"]: after[f["label"]] or "" for f in fields if f["key"] in keys}
-        old_values = {f["key"]: before[f["label"]] or "" for f in fields if f["key"] in keys}
-        if new_values != old_values:
-            draft.save_review(job_id, sheet, int(after.Row), final=new_values)
-            changed += 1
-    if changed:
-        st.toast(f"Saved {changed} change{'s' if changed > 1 else ''}")
+    review_grid.grid(job_id, sp, view, key=f"{job_id}:{sheet}:{show}:{section}:{who}:{text}",
+                     returned=who == RETURNED)
 
     # ---- Answer details ----
     st.subheader("Answer details")
-    pick = st.selectbox("Row", view.row_num.tolist(), key=f"why:{job_id}:{sheet}",
-                        format_func=lambda n: f"Row {n}: {view.set_index('row_num').loc[n, 'requirement'][:100]}")
-    r = view.set_index("row_num").loc[pick]
-    h1, h2 = st.columns([1, 5])
-    with h1:
-        status_badge(r.status)
-    h2.caption(f"Confidence **{CONF_LABELS.get(r.confidence)}** (AI said {CONF_LABELS.get(r.ai_confidence)}, "
-               f"closest past answer similarity {r.best_similarity:.2f})")
-    st.markdown("**AI reasoning**")
-    st.write(r.rationale)
-    if r.cost_impact:
-        st.warning(f"May add cost: {r.cost_note}")
-    st.markdown("**Past answers it used**")
-    for e in json.loads(r.evidence or "[]"):
-        sim = f" · similarity {e['similarity']:.2f}" if e.get("similarity") is not None else ""
-        with st.expander(f"{e['id']} · {STATUS_LABELS.get(e['status'], e['status'])} · {e['client']} "
-                         f"({e['submitted'] or '?'}){sim}"):
-            st.write(e["requirement"])
-            st.caption(e["comment"] or "_No comment_")
+    review_grid.details(view, key=f"{job_id}:{sheet}")
 
 if choice == NEW:
     new_draft()

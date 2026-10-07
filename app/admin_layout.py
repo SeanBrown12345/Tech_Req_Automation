@@ -42,16 +42,19 @@ _CSS = f"""
 """
 
 
-def admin_layout(pages: list, current) -> st.delta_generator.DeltaGenerator:
-    """Draw the section list; return the container the current page renders into."""
+def admin_layout(groups: dict[str, list], current) -> st.delta_generator.DeltaGenerator:
+    """Draw the section list (`groups`: caption -> pages); return the container the current page renders into."""
     st.html(_CSS)
     nav, content = st.columns([1, 4], gap="large")
     with nav.container(key="admin-nav"):
-        st.caption("KNOWLEDGE BASE")
-        for p in pages:
-            if p.url_path == current.url_path:
-                with st.container(key="admin-nav-active"):
+        for i, (caption, pages) in enumerate(groups.items()):
+            st.caption(caption)
+            for p in pages:
+                if p.url_path == current.url_path:
+                    with st.container(key="admin-nav-active"):
+                        st.page_link(p)
+                else:
                     st.page_link(p)
-            else:
-                st.page_link(p)
+            if i < len(groups) - 1:
+                st.space("small")
     return content.container(key="admin-content")
