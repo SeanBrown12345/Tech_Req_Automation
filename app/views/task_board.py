@@ -12,7 +12,7 @@ import streamlit as st
 
 from app import review_grid
 from app.admin_layout import ACCENT
-from app.common import status_badge
+from app.common import card_styles, status_badge
 from kb import db, draft
 
 st.html(f"""<style>
@@ -24,6 +24,7 @@ st.html(f"""<style>
 .st-key-rv-requirement {{ border-left: 4px solid {ACCENT}; padding-left: 1rem; }}
 .st-key-rv-requirement p {{ font-size: 1.15rem; line-height: 1.5; }}
 </style>""")
+card_styles()
 
 
 def _load() -> pd.DataFrame:
@@ -355,72 +356,74 @@ def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str) -> Non
     answers = json.loads(r.final if isinstance(r.final, str) else r.ai)
     nav = (job_id, sheet, row_num, fields, answers)
 
-    with st.container(key="rv-requirement"):
-        if isinstance(r.parent_text, str) and r.parent_text:
-            st.caption(f"Under: {r.parent_text}")
-        st.markdown(r.requirement)
-    with st.container(horizontal=True, gap="small"):
-        status_badge(r.status)
-        st.badge(f"{review_grid.CONF_LABELS.get(r.confidence)} confidence",
-                 color={"low": "red", "medium": "orange", "high": "green"}.get(r.confidence, "gray"))
-        if isinstance(r.module, str) and r.module:
-            st.badge(r.module, icon=":material/category:", color="blue")
-        if r.partner_status == "received":
-            st.badge(f"Answered by {person} · {str(r.received_at)[:10]}", icon=":material/mark_email_read:",
-                     color="violet")
-        elif r.partner_status == "sent":
-            st.badge(f"Sent to {person} · {str(r.sent_at)[:10]} · no answer yet", icon=":material/schedule_send:",
-                     color="orange")
+    with st.container(border=True, key="card-row"):
+        st.subheader("Requirement")
+        with st.container(key="rv-requirement"):
+            if isinstance(r.parent_text, str) and r.parent_text:
+                st.caption(f"Under: {r.parent_text}")
+            st.markdown(r.requirement)
+        with st.container(horizontal=True, gap="small"):
+            status_badge(r.status)
+            st.badge(f"{review_grid.CONF_LABELS.get(r.confidence)} confidence",
+                     color={"low": "red", "medium": "orange", "high": "green"}.get(r.confidence, "gray"))
+            if isinstance(r.module, str) and r.module:
+                st.badge(r.module, icon=":material/category:", color="blue")
+            if r.partner_status == "received":
+                st.badge(f"Answered by {person} · {str(r.received_at)[:10]}", icon=":material/mark_email_read:",
+                         color="violet")
+            elif r.partner_status == "sent":
+                st.badge(f"Sent to {person} · {str(r.sent_at)[:10]} · no answer yet", icon=":material/schedule_send:",
+                         color="orange")
+            if r.reviewed:
+                st.badge("Approved", icon=":material/check:", color="green")
+
+        for f in fields:
+            key, value = _field_key(job_id, sheet, row_num, f["key"]), answers.get(f["key"]) or ""
+            if f["kind"] in ("choice", "marks"):
+                options = f["options"] if f["kind"] == "choice" else [f["labels"][c] for c in f["columns"]]
+                st.selectbox(f["label"], options, index=options.index(value) if value in options else None,
+                             key=key, on_change=_save_answers, args=nav)
+            else:
+                st.text_area(f["label"], value=value, key=key, height=140, on_change=_save_answers, args=nav)
+        original = json.loads(r.ai)
+        if any((original.get(f["key"]) or "") != (answers.get(f["key"]) or "") for f in fields):
+            with st.expander("Our original AI draft"):
+                for f in fields:
+                    st.caption(f"**{f['label']}**: {original.get(f['key']) or '—'}")
+        st.checkbox("Flag for pricing", value=bool(r.cost_impact), key=_field_key(job_id, sheet, row_num, "_pricing"),
+                    on_change=_flag, args=(job_id, sheet, row_num),
+                    help="Meeting this requirement may add cost. Highlighted yellow in the download.")
+
+        p, s, h, a = st.columns([1, 1, 1, 2])
+        p.button("Previous", icon=":material/chevron_left:", width="stretch", disabled=rv["pos"] == 0,
+                 on_click=_move, args=(-1, None, *nav))
+        s.button("Skip", icon=":material/chevron_right:", width="stretch", on_click=_move, args=(1, None, *nav),
+                 help="Keep your edits and come back to this row later")
         if r.reviewed:
-            st.badge("Approved", icon=":material/check:", color="green")
-
-    for f in fields:
-        key, value = _field_key(job_id, sheet, row_num, f["key"]), answers.get(f["key"]) or ""
-        if f["kind"] in ("choice", "marks"):
-            options = f["options"] if f["kind"] == "choice" else [f["labels"][c] for c in f["columns"]]
-            st.selectbox(f["label"], options, index=options.index(value) if value in options else None,
-                         key=key, on_change=_save_answers, args=nav)
+            a.button("Next", type="primary", icon=":material/arrow_forward:", width="stretch",
+                     on_click=_move, args=(1, None, *nav))
+            st.button("Undo approval", type="tertiary", on_click=_move, args=(0, False, *nav))
         else:
-            st.text_area(f["label"], value=value, key=key, height=140, on_change=_save_answers, args=nav)
-    original = json.loads(r.ai)
-    if any((original.get(f["key"]) or "") != (answers.get(f["key"]) or "") for f in fields):
-        with st.expander("Our original AI draft"):
-            for f in fields:
-                st.caption(f"**{f['label']}**: {original.get(f['key']) or '—'}")
-    st.checkbox("Flag for pricing", value=bool(r.cost_impact), key=_field_key(job_id, sheet, row_num, "_pricing"),
-                on_change=_flag, args=(job_id, sheet, row_num),
-                help="Meeting this requirement may add cost. Highlighted yellow in the download.")
-
-    p, s, h, a = st.columns([1, 1, 1, 2])
-    p.button("Previous", icon=":material/chevron_left:", width="stretch", disabled=rv["pos"] == 0,
-             on_click=_move, args=(-1, None, *nav))
-    s.button("Skip", icon=":material/chevron_right:", width="stretch", on_click=_move, args=(1, None, *nav),
-             help="Keep your edits and come back to this row later")
-    if r.reviewed:
-        a.button("Next", type="primary", icon=":material/arrow_forward:", width="stretch",
-                 on_click=_move, args=(1, None, *nav))
-        st.button("Undo approval", type="tertiary", on_click=_move, args=(0, False, *nav))
-    else:
-        a.button("Approve & next", type="primary", icon=":material/check:", width="stretch",
-                 on_click=_move, args=(1, True, *nav))
-    # Keyed per row, so it starts closed on the next row after a hand-off.
-    with h.popover("Reassign", icon=":material/move_item:", width="stretch",
-                   key=_field_key(job_id, sheet, row_num, "_reassign_menu"),
-                   help="Out of your area? Give this row to someone else, or return it to the pool"):
-        covering = draft.partners()
-        choice = st.selectbox("Reassign to", [*[n for n in draft.people() if n != person], UNASSIGN], index=None,
-                              placeholder="Pick a person", key=_field_key(job_id, sheet, row_num, "_reassign"),
-                              format_func=lambda n: f"{n} · partner" if n in covering else n)
-        st.button("Accept", type="primary", width="stretch", disabled=choice is None,
-                  on_click=_reassign, args=(person, *nav))
-    st.caption(f"Row {rv['pos'] + 1} of {len(queue)} in this review")
-    context = " › ".join(v for v in json.loads(r.context).values() if v) if isinstance(r.context, str) else ""
-    st.caption(" · ".join(p for p in [r.req_id if isinstance(r.req_id, str) else "", f"Worksheet row {row_num}",
-                                     context] if p))
-    st.divider()
-    st.subheader("Why the AI answered this way")
-    st.caption(review_grid.confidence_note(r))
-    review_grid.evidence(r, expanded=2)
+            a.button("Approve & next", type="primary", icon=":material/check:", width="stretch",
+                     on_click=_move, args=(1, True, *nav))
+        # Keyed per row, so it starts closed on the next row after a hand-off.
+        with h.popover("Reassign", icon=":material/move_item:", width="stretch",
+                       key=_field_key(job_id, sheet, row_num, "_reassign_menu"),
+                       help="Out of your area? Give this row to someone else, or return it to the pool"):
+            covering = draft.partners()
+            choice = st.selectbox("Reassign to", [*[n for n in draft.people() if n != person], UNASSIGN], index=None,
+                                  placeholder="Pick a person", key=_field_key(job_id, sheet, row_num, "_reassign"),
+                                  format_func=lambda n: f"{n} · partner" if n in covering else n)
+            st.button("Accept", type="primary", width="stretch", disabled=choice is None,
+                      on_click=_reassign, args=(person, *nav))
+        st.caption(f"Row {rv['pos'] + 1} of {len(queue)} in this review")
+        context = " › ".join(v for v in json.loads(r.context).values() if v) if isinstance(r.context, str) else ""
+        st.caption(" · ".join(p for p in [r.req_id if isinstance(r.req_id, str) else "", f"Worksheet row {row_num}",
+                                         context] if p))
+    with st.container(border=True, key="card-why"):
+        st.subheader("Why the AI answered this way")
+        st.caption(review_grid.confidence_note(r))
+        review_grid.evidence(r, expanded=2)
 
 
 # =================================================================================================

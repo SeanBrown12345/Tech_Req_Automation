@@ -7,7 +7,7 @@ import json
 import pandas as pd
 import streamlit as st
 
-from app.common import status_badge, status_badge_md, status_label
+from app.common import status_badge, status_label
 from kb import draft, modules
 
 CONF_LABELS = {"high": "High", "medium": "Medium", "low": "Low"}
@@ -129,9 +129,24 @@ def details(view: pd.DataFrame, key: str) -> None:
     evidence(r)
 
 
+def similarity_md(sim) -> str:
+    """A similarity score as a coloured Markdown badge, banded by the same thresholds that cap the
+    draft's confidence: green for a strong match, orange for a partial one, red for a weak one."""
+    if sim is None or pd.isna(sim):
+        return ""
+    if sim >= draft.SIM_SAME:
+        color, label = "green", "Same requirement"
+    elif sim >= draft.SIM_HIGH:
+        color, label = "green", "Strong match"
+    elif sim >= draft.SIM_MEDIUM:
+        color, label = "orange", "Partial match"
+    else:
+        color, label = "red", "Weak match"
+    return f":{color}-badge[{sim:.2f} · {label}]"
+
+
 def confidence_note(r) -> str:
-    return (f"Confidence **{CONF_LABELS.get(r.confidence)}** (AI said {CONF_LABELS.get(r.ai_confidence)}, "
-            f"closest past answer similarity {r.best_similarity:.2f})")
+    return f"Confidence **{CONF_LABELS.get(r.confidence)}**"
 
 
 def evidence(r, expanded: int = 0) -> None:
@@ -145,8 +160,8 @@ def evidence(r, expanded: int = 0) -> None:
     if not past:
         st.caption("None: no similar past answers were found.")
     for i, e in enumerate(past):
-        sim = f" · similarity {e['similarity']:.2f}" if e.get("similarity") is not None else ""
-        with st.expander(f"{status_badge_md(e['status'])} {e['client']} ({e['submitted'] or '?'}){sim}",
+        with st.expander(f"{similarity_md(e.get('similarity'))} {e['client']} ({e['submitted'] or '?'})",
                          expanded=i < expanded):
+            status_badge(e["status"])
             st.write(e["requirement"])
             st.caption(e["comment"] or "_No comment_")

@@ -7,6 +7,7 @@ import streamlit as st
 
 from app import review_grid
 from app.admin_layout import ACCENT
+from app.common import card_styles
 from kb import db, draft, modules
 
 KIND_LABELS = {"choice": "Pick from list", "text": "Free text", "marks": "Mark one column"}
@@ -125,19 +126,8 @@ st.html(f"""<style>
 [data-testid="stMain"] [data-testid="stHeading"] h1 {{
     padding-bottom: 0.6rem; border-bottom: 1px solid rgba(128, 128, 128, 0.25); margin-bottom: 0.5rem;
 }}
-/* An existing draft's sections (results, review, answer details) each sit on their own tinted card,
-   so it's clear where one ends and the next begins. */
-[class*="st-key-card-"] {{
-    padding: 1.25rem 1.5rem 1.5rem; margin-top: 0.75rem; background: rgba(151, 166, 195, 0.06);
-}}
-[class*="st-key-card-"] [data-testid="stHeading"] h3 {{ margin-top: 0; }}
-/* Inputs on a card: a lighter fill and a faint outline, so they stand out from the card's tint. */
-[class*="st-key-card-"] [data-testid="stSelectbox"] [role="group"],
-[class*="st-key-card-"] [data-testid="stTextInputRootElement"],
-[class*="st-key-card-"] [data-testid="stTextAreaRootElement"] {{
-    background: #2C3039; border-color: rgba(255, 255, 255, 0.14);
-}}
 </style>""")
+card_styles()  # an existing draft's sections (results, review, answer details) each sit on a card
 with st.container(key="draft-field"):
     st.markdown("Draft")
     with st.popover(labels[choice], width="stretch", key="draft_picker", on_change="rerun"), \
