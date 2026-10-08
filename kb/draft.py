@@ -191,6 +191,9 @@ CREATE TABLE IF NOT EXISTS rows (
     returned_by  TEXT,                  -- unassigned because this SME handed it back (the "returned" pool)
     return_note  TEXT,                  -- their reason, if they gave one
     module       TEXT,                  -- product module (kb/modules.py), or General; NULL = not detected yet
+    partner_status TEXT,                -- rows assigned to a partner: NULL (not sent) | sent | received
+    sent_at      TEXT,                  -- when the partner's trimmed worksheet was last exported
+    received_at  TEXT,                  -- when their answer was imported
     error        TEXT,
     PRIMARY KEY (job_id, sheet, row_num)
 );
@@ -207,13 +210,19 @@ CREATE TABLE IF NOT EXISTS people (
     name        TEXT PRIMARY KEY,       -- as shown on the task board and stored in rows.assignee
     email       TEXT,
     areas       TEXT,                   -- what they review, to help whoever assigns rows
-    created_at  TEXT NOT NULL
+    created_at  TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'sme',  -- sme (uses the app) | partner (answers by email)
+    modules     TEXT                    -- partners: JSON list of the modules they cover
 );
 """
 
 
 # Columns added after the first release: existing databases get them on connect.
-_ADDED_COLUMNS = {"rows": {"assignee": "TEXT", "returned_by": "TEXT", "return_note": "TEXT", "module": "TEXT"}}
+_ADDED_COLUMNS = {
+    "rows": {"assignee": "TEXT", "returned_by": "TEXT", "return_note": "TEXT", "module": "TEXT",
+             "partner_status": "TEXT", "sent_at": "TEXT", "received_at": "TEXT"},
+    "people": {"kind": "TEXT NOT NULL DEFAULT 'sme'", "modules": "TEXT"},
+}
 
 _drafts_ready = False  # Postgres: tables created once per process
 _sqlite_ready: set = set()  # SQLite files already migrated in this process
@@ -703,9 +712,13 @@ def assign(job_id: str, sheet: str, row_nums: list[int], assignee: str | None) -
     """Give rows to an SME (None = unassign). Either way they leave the returned pool."""
     conn = connect_drafts()
     with conn:
-        conn.executemany("UPDATE rows SET assignee = ?, returned_by = NULL, return_note = NULL"
+        # Partner tracking belongs to the current assignee: it's kept only if the row stays with them.
+        conn.executemany("UPDATE rows SET assignee = ?, returned_by = NULL, return_note = NULL,"
+                         " partner_status = CASE WHEN assignee = ? THEN partner_status END,"
+                         " sent_at = CASE WHEN assignee = ? THEN sent_at END,"
+                         " received_at = CASE WHEN assignee = ? THEN received_at END"
                          " WHERE job_id = ? AND sheet = ? AND row_num = ?",
-                         [(assignee, job_id, sheet, int(n)) for n in row_nums])
+                         [(assignee, assignee, assignee, assignee, job_id, sheet, int(n)) for n in row_nums])
     conn.close()
 
 
@@ -714,62 +727,82 @@ def return_row(job_id: str, sheet: str, row_num: int, by: str, note: str | None 
     assigned) until someone reassigns it."""
     conn = connect_drafts()
     with conn:
-        conn.execute("UPDATE rows SET assignee = NULL, returned_by = ?, return_note = ?"
-                     " WHERE job_id = ? AND sheet = ? AND row_num = ?", (by, note or None, job_id, sheet, row_num))
+        conn.execute("UPDATE rows SET assignee = NULL, returned_by = ?, return_note = ?, partner_status = NULL,"
+                     " sent_at = NULL, received_at = NULL WHERE job_id = ? AND sheet = ? AND row_num = ?",
+                     (by, note or None, job_id, sheet, row_num))
     conn.close()
 
 
 # ================================================================================================
-# SMEs: the people rows can be assigned to
+# People rows can be assigned to: SMEs (use the app) and partners (answer by email)
 # ================================================================================================
 
-def people() -> list[str]:
-    """SME names, alphabetically."""
+SME, PARTNER = "sme", "partner"
+
+
+def people(kind: str | None = None) -> list[str]:
+    """Names, alphabetically: everyone, or only SMEs or partners."""
     conn = connect_drafts()
     try:
-        return [r[0] for r in conn.execute("SELECT name FROM people ORDER BY LOWER(name)")]
+        sql = "SELECT name FROM people" + (" WHERE kind = ?" if kind else "") + " ORDER BY LOWER(name)"
+        return [r[0] for r in conn.execute(sql, (kind,) if kind else ())]
     finally:
         conn.close()
 
 
-def people_table() -> "pd.DataFrame":
-    """SMEs with how many rows they have open and approved, across all drafts."""
+def partners() -> dict[str, list[str]]:
+    """Partner name -> the modules they cover."""
+    conn = connect_drafts()
+    try:
+        return {r[0]: json.loads(r[1] or "[]") for r in conn.execute(
+            "SELECT name, modules FROM people WHERE kind = ? ORDER BY LOWER(name)", (PARTNER,))}
+    finally:
+        conn.close()
+
+
+def people_table(kind: str = SME) -> "pd.DataFrame":
+    """SMEs or partners with how many rows they have open and approved, across all drafts."""
     conn = connect_drafts()
     try:
         return db.read_sql(conn, """
-            SELECT p.name, p.email, p.areas,
+            SELECT p.name, p.email, p.areas, p.modules,
                    COUNT(CASE WHEN r.reviewed = 0 THEN 1 END) AS open,
                    COUNT(CASE WHEN r.reviewed = 1 THEN 1 END) AS approved
             FROM people p LEFT JOIN rows r ON r.assignee = p.name
-            GROUP BY p.name, p.email, p.areas ORDER BY LOWER(p.name)""")
+            WHERE p.kind = ?
+            GROUP BY p.name, p.email, p.areas, p.modules ORDER BY LOWER(p.name)""", [kind])
     finally:
         conn.close()
 
 
-def add_person(name: str, email: str | None = None, areas: str | None = None) -> bool:
-    """Add an SME; False if the name is already taken (names are compared ignoring case)."""
+def add_person(name: str, email: str | None = None, areas: str | None = None, kind: str = SME,
+               modules_covered: list[str] | None = None) -> bool:
+    """Add an SME or partner; False if the name is already taken (compared ignoring case) by anyone."""
     conn = connect_drafts()
     try:
         with conn:
             if conn.execute("SELECT 1 FROM people WHERE LOWER(name) = LOWER(?)", (name,)).fetchone():
                 return False
-            conn.execute("INSERT INTO people (name, email, areas, created_at) VALUES (?, ?, ?, ?)",
-                         (name, email or None, areas or None, _now()))
+            conn.execute("INSERT INTO people (name, email, areas, created_at, kind, modules) VALUES (?, ?, ?, ?, ?, ?)",
+                         (name, email or None, areas or None, _now(), kind,
+                          json.dumps(modules_covered) if modules_covered else None))
         return True
     finally:
         conn.close()
 
 
-def update_person(old_name: str, name: str, email: str | None, areas: str | None) -> bool:
-    """Edit an SME. A new name follows them onto their rows. False if the new name is someone else's."""
+def update_person(old_name: str, name: str, email: str | None, areas: str | None,
+                  modules_covered: list[str] | None = None) -> bool:
+    """Edit someone. A new name follows them onto their rows. False if the new name is someone else's."""
     conn = connect_drafts()
     try:
         with conn:
             if name.lower() != old_name.lower() and conn.execute(
                     "SELECT 1 FROM people WHERE LOWER(name) = LOWER(?)", (name,)).fetchone():
                 return False
-            conn.execute("UPDATE people SET name = ?, email = ?, areas = ? WHERE name = ?",
-                         (name, email or None, areas or None, old_name))
+            conn.execute("UPDATE people SET name = ?, email = ?, areas = ?, modules = ? WHERE name = ?",
+                         (name, email or None, areas or None,
+                          json.dumps(modules_covered) if modules_covered else None, old_name))
             if name != old_name:
                 conn.execute("UPDATE rows SET assignee = ? WHERE assignee = ?", (name, old_name))
                 conn.execute("UPDATE rows SET returned_by = ? WHERE returned_by = ?", (name, old_name))
@@ -779,12 +812,13 @@ def update_person(old_name: str, name: str, email: str | None, areas: str | None
 
 
 def remove_person(name: str) -> None:
-    """Remove an SME. Their rows still to review go to the pool of rows unassigned by an SME, for the bid
-    manager to reassign; rows they approved stay approved but no longer carry their name."""
+    """Remove an SME or partner. Their rows still to review go to the pool of rows unassigned by an SME,
+    for the bid manager to reassign; rows already approved stay approved but no longer carry the name."""
     conn = connect_drafts()
     try:
         with conn:
-            conn.execute("UPDATE rows SET assignee = NULL, returned_by = ?, return_note = 'Removed from the SME list'"
+            conn.execute("UPDATE rows SET assignee = NULL, returned_by = ?, return_note = 'Removed from the list',"
+                         " partner_status = NULL, sent_at = NULL, received_at = NULL"
                          " WHERE assignee = ? AND reviewed = 0", (name, name))
             conn.execute("UPDATE rows SET assignee = NULL WHERE assignee = ?", (name,))
             conn.execute("DELETE FROM people WHERE name = ?", (name,))
@@ -799,6 +833,24 @@ def delete_job(job_id: str) -> None:
         conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
     conn.close()
     workbook_path(job_id).unlink(missing_ok=True)
+
+
+def _answer_cells(r, fields: dict[str, dict]) -> tuple[dict[str, str], list[str]]:
+    """The cells one row's answer writes ({ref: value}) and every answer cell it covers."""
+    n, answer = r["row_num"], json.loads(r["final"] or r["ai"])
+    values, covered = {}, []
+    for key in json.loads(r["fill"]):
+        f = fields[key]
+        value = answer.get(key) or ""
+        if f["kind"] == "marks":
+            chosen = next((c for c in f["columns"] if f["labels"][c] == value), None)
+            if chosen:
+                values[f"{chosen}{n}"] = f["labels"][chosen].split(" - ")[0] if f.get("symbol") == "header" else "X"
+            covered += [f"{c}{n}" for c in f["columns"]]
+        elif value:
+            values[f"{f['columns'][0]}{n}"] = value
+            covered.append(f"{f['columns'][0]}{n}")
+    return values, covered
 
 
 def build_output(job_id: str, highlight_low: bool = True, highlight_cost: bool = True) -> bytes:
@@ -819,20 +871,8 @@ def build_output(job_id: str, highlight_low: bool = True, highlight_cost: bool =
     fills: dict[str, dict[str, str]] = {}
     for r in rows:
         sheet, n = r["sheet"], r["row_num"]
-        answer = json.loads(r["final"] or r["ai"])
-        written = []
-        for key in json.loads(r["fill"]):
-            f = fields_by_sheet[sheet][key]
-            value = answer.get(key) or ""
-            if f["kind"] == "marks":
-                chosen = next((c for c in f["columns"] if f["labels"][c] == value), None)
-                if chosen:
-                    symbol = chosen and (f["labels"][chosen].split(" - ")[0] if f.get("symbol") == "header" else "X")
-                    values.setdefault(sheet, {})[f"{chosen}{n}"] = symbol
-                written += [f"{c}{n}" for c in f["columns"]]
-            elif value:
-                values.setdefault(sheet, {})[f"{f['columns'][0]}{n}"] = value
-                written.append(f"{f['columns'][0]}{n}")
+        cells, written = _answer_cells(r, fields_by_sheet[sheet])
+        values.setdefault(sheet, {}).update(cells)
         if highlight_low and r["confidence"] == "low" and not r["reviewed"]:
             for ref in written:
                 fills.setdefault(sheet, {})[ref] = RED
@@ -840,3 +880,164 @@ def build_output(job_id: str, highlight_low: bool = True, highlight_cost: bool =
             fills.setdefault(sheet, {})[f"{req_col[sheet]}{n}"] = YELLOW
 
     return patch_workbook(workbook_path(job_id).read_bytes(), values, fills)
+
+
+# ================================================================================================
+# Partners: a trimmed copy of the client's worksheet goes out by email, their answers come back
+# ================================================================================================
+
+def build_partner_export(job_id: str, partner: str) -> bytes:
+    """The client's workbook as a partner should see it: their rows filled with our drafted answers,
+    every other requirement row hidden, and requirement sheets with none of their rows hidden.
+    Nothing is deleted, so their reply lines up row for row. No highlights, no pricing."""
+    conn = connect_drafts()
+    try:
+        plan = json.loads(conn.execute("SELECT plan FROM jobs WHERE job_id = ?", (job_id,)).fetchone()[0])
+        rows = conn.execute("SELECT * FROM rows WHERE job_id = ? AND assignee = ? AND ai IS NOT NULL",
+                            (job_id, partner)).fetchall()
+        last_row = {r[0]: r[1] for r in conn.execute(
+            "SELECT sheet, MAX(row_num) FROM rows WHERE job_id = ? GROUP BY sheet", (job_id,))}
+    finally:
+        conn.close()
+    fields_by_sheet = {sp["name"]: {f["key"]: f for f in sp["fields"]} for sp in plan["sheets"]}
+    values: dict[str, dict[str, str | None]] = {}
+    theirs: dict[str, set[int]] = {}
+    for r in rows:
+        values.setdefault(r["sheet"], {}).update(_answer_cells(r, fields_by_sheet[r["sheet"]])[0])
+        theirs.setdefault(r["sheet"], set()).add(r["row_num"])
+    # Hide the requirement rows that aren't theirs: everything between the header and the last requirement
+    # row (title, instructions and header above, and any notes below, stay visible).
+    hidden_rows = {sp["name"]: set(range(sp["header_row"] + 1, last_row[sp["name"]] + 1)) - theirs[sp["name"]]
+                   for sp in plan["sheets"] if sp["name"] in theirs}
+    hidden_sheets = {sp["name"] for sp in plan["sheets"]
+                     if sp.get("include", True) and sp["name"] in last_row and sp["name"] not in theirs}
+    return patch_workbook(workbook_path(job_id).read_bytes(), values,
+                          hidden_rows=hidden_rows, hidden_sheets=hidden_sheets)
+
+
+def mark_sent(job_id: str, partner: str) -> None:
+    """Record that the partner's rows went out (rows already answered stay received)."""
+    conn = connect_drafts()
+    with conn:
+        conn.execute("UPDATE rows SET sent_at = ?, partner_status = CASE WHEN partner_status = 'received'"
+                     " THEN 'received' ELSE 'sent' END WHERE job_id = ? AND assignee = ? AND ai IS NOT NULL",
+                     (_now(), job_id, partner))
+    conn.close()
+
+
+def _norm(text) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip().lower()
+
+
+ANSWERED, SAME, BLANK, MISMATCH, INVALID, MISSING = (
+    "Changed", "Same as our draft", "Left blank", "Requirement doesn't match", "Not an allowed option", "Not in file")
+IMPORTABLE = (ANSWERED, SAME)
+
+
+def read_partner_answers(job_id: str, partner: str, data: bytes) -> list[dict]:
+    """Match a partner's returned workbook to their rows: per row our current answer, theirs, and a status
+    (see the constants above). Rows are found by sheet and row number, then checked by requirement text in
+    case rows were inserted or deleted."""
+    conn = connect_drafts()
+    try:
+        plan = json.loads(conn.execute("SELECT plan FROM jobs WHERE job_id = ?", (job_id,)).fetchone()[0])
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM rows WHERE job_id = ? AND assignee = ? AND ai IS NOT NULL ORDER BY sheet, row_num",
+            (job_id, partner))]
+    finally:
+        conn.close()
+    sheets = read_workbook(data)
+    plans = {sp["name"]: sp for sp in plan["sheets"]}
+    # Requirement text -> line, per sheet, to find rows that moved (a partner inserted or deleted rows).
+    by_text: dict[str, dict[str, list]] = {}
+    for name, sp in plans.items():
+        index: dict[str, list] = {}
+        req = _col(sp["columns"]["requirement"])
+        for line in sheets.get(name) or []:
+            if req < len(line) and _norm(line[req]):
+                index.setdefault(_norm(line[req]), []).append(line)
+        by_text[name] = index
+    out = []
+    for r in rows:
+        sp = plans[r["sheet"]]
+        fields = {f["key"]: f for f in sp["fields"]}
+        ours = json.loads(r["final"] or r["ai"])
+        item = {"sheet": r["sheet"], "row_num": r["row_num"], "requirement": r["requirement"], "ours": ours,
+                "theirs": {}, "fill": json.loads(r["fill"])}
+        grid = sheets.get(r["sheet"])
+        line = grid[r["row_num"] - 1] if grid and r["row_num"] - 1 < len(grid) else None
+        if line is None:
+            out.append(item | {"status": MISSING})
+            continue
+
+        def cell(letter):
+            i = _col(letter)
+            return line[i] if i < len(line) else None
+
+        found = _norm(cell(sp["columns"]["requirement"]))
+        expected = _norm(r["requirement"])
+        if not found or not (found[:60] in expected or expected[:60] in found):
+            moved = by_text[r["sheet"]].get(expected) or []
+            if len(moved) != 1:
+                out.append(item | {"status": MISMATCH})
+                continue
+            line = moved[0]
+        status = None
+        for key in item["fill"]:
+            f = fields[key]
+            if f["kind"] == "marks":
+                marked = [f["labels"][c] for c in f["columns"] if not _is_empty(cell(c))]
+                value = marked[0] if len(marked) == 1 else ""
+                if len(marked) > 1:
+                    status = INVALID
+            else:
+                raw = cell(f["columns"][0])
+                value = "" if _is_empty(raw) else str(raw).strip()
+                if value and f["kind"] == "choice":
+                    canonical = next((o for o in f.get("options") or [] if _norm(o) == _norm(value)), None)
+                    if canonical is None:
+                        status = INVALID
+                    value = canonical or value
+            item["theirs"][key] = value
+        if status is None:
+            if not any(item["theirs"].values()):
+                status = BLANK
+            elif all((item["theirs"].get(k) or "") == (ours.get(k) or "") for k in item["fill"]):
+                status = SAME
+            else:
+                status = ANSWERED
+        out.append(item | {"status": status})
+    return out
+
+
+def approve_partner_answers(job_id: str, partner: str) -> int:
+    """Approve every answer the partner sent back that isn't approved yet; returns how many."""
+    conn = connect_drafts()
+    try:
+        with conn:
+            return conn.execute("UPDATE rows SET reviewed = 1 WHERE job_id = ? AND assignee = ?"
+                                " AND partner_status = 'received' AND reviewed = 0", (job_id, partner)).rowcount
+    finally:
+        conn.close()
+
+
+def apply_partner_answers(job_id: str, items: list[dict]) -> int:
+    """Save the importable answers from read_partner_answers as received (not approved); returns how many.
+    A changed answer needs approving again even if the row was approved before."""
+    now, done = _now(), 0
+    conn = connect_drafts()
+    try:
+        with conn:
+            for item in items:
+                if item["status"] not in IMPORTABLE:
+                    continue
+                answer = item["ours"] | item["theirs"]
+                conn.execute("UPDATE rows SET final = ?, partner_status = 'received', received_at = ?,"
+                             " reviewed = CASE WHEN ? THEN 0 ELSE reviewed END"
+                             " WHERE job_id = ? AND sheet = ? AND row_num = ?",
+                             (json.dumps(answer), now, item["status"] == ANSWERED, job_id, item["sheet"],
+                              item["row_num"]))
+                done += 1
+        return done
+    finally:
+        conn.close()

@@ -138,12 +138,17 @@ def _keywords(code: str, description: str) -> list[str]:
     return [*parts, *(p.strip() for p in description.split("/") if p.strip())]
 
 
+def mentioned(text: str) -> list[str]:
+    """Modules a piece of text names, by code or description ("Customer Engagement Portal (CEP)" -> CEP/CSS)."""
+    return [code for code, description in load()
+            if any(re.search(rf"(?<![A-Za-z]){re.escape(k)}(?![A-Za-z])", text or "", re.I)
+                   for k in _keywords(code, description))]
+
+
 def from_sheet_name(sheet: str) -> str | None:
     """The module a sheet's name names, if it names exactly one."""
-    hits = {code for code, description in load()
-            if any(re.search(rf"(?<![A-Za-z]){re.escape(k)}(?![A-Za-z])", sheet, re.I)
-                   for k in _keywords(code, description))}
-    return hits.pop() if len(hits) == 1 else None
+    hits = mentioned(sheet)
+    return hits[0] if len(hits) == 1 else None
 
 
 def _system_prompt() -> str:

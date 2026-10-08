@@ -156,9 +156,8 @@ class _Styles:
         return etree.tostring(self.root, xml_declaration=True, encoding="UTF-8", standalone=True)
 
 
-def _row_and_cell(sheet_data, rows: dict[int, etree._Element], ref: str):
-    """Find or create the <row> and <c> for `ref`, keeping both in document order."""
-    col, r = split_ref(ref)
+def _row(sheet_data, rows: dict[int, etree._Element], r: int):
+    """Find or create the <row> numbered `r`, keeping rows in document order."""
     row = rows.get(r)
     if row is None:
         row = etree.Element(q("row"), r=str(r))
@@ -168,6 +167,13 @@ def _row_and_cell(sheet_data, rows: dict[int, etree._Element], ref: str):
         else:
             sheet_data.append(row)
         rows[r] = row
+    return row
+
+
+def _row_and_cell(sheet_data, rows: dict[int, etree._Element], ref: str):
+    """Find or create the <row> and <c> for `ref`, keeping both in document order."""
+    col, r = split_ref(ref)
+    row = _row(sheet_data, rows, r)
     col_idx = column_index_from_string(col)
     for c in row.findall(q("c")):
         c_col, _ = split_ref(c.get("r"))
@@ -200,22 +206,45 @@ def _set_value(cell, value: str | None) -> None:
         t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
 
 
+def _hide_sheets(xml: bytes, hidden: set[str]) -> tuple[bytes, list[str]]:
+    """workbook.xml with `hidden` sheets set to hidden and the first visible sheet made the active tab.
+    Returns the new XML and the sheet names in tab order."""
+    root = etree.fromstring(xml)
+    sheets = list(root.iter(q("sheet")))
+    for sheet in sheets:
+        if sheet.get("name") in hidden:
+            sheet.set("state", "hidden")
+    visible = [i for i, sheet in enumerate(sheets) if sheet.get("state") not in ("hidden", "veryHidden")]
+    if visible:
+        for view in root.iter(q("workbookView")):
+            if int(view.get("activeTab", "0")) not in visible:
+                view.set("activeTab", str(visible[0]))
+            if int(view.get("firstSheet", "0")) not in visible:
+                view.set("firstSheet", str(visible[0]))
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True),         [sheet.get("name") for sheet in sheets]
+
+
 def patch_workbook(data: bytes, values: dict[str, dict[str, str | None]],
-                   highlights: dict[str, dict[str, str]] | None = None) -> bytes:
+                   highlights: dict[str, dict[str, str]] | None = None,
+                   hidden_rows: dict[str, set[int]] | None = None, hidden_sheets: set[str] | None = None) -> bytes:
     """Return a copy of the workbook with cell values set and cells highlighted.
 
-    values:     {sheet: {"F7": "1 - Current Functionality", ...}}; None/"" clears the value.
-    highlights: {sheet: {"E7": "FFFFC7CE", ...}} ARGB fill colors.
+    values:        {sheet: {"F7": "1 - Current Functionality", ...}}; None/"" clears the value.
+    highlights:    {sheet: {"E7": "FFFFC7CE", ...}} ARGB fill colors.
+    hidden_rows:   {sheet: {12, 13, ...}} rows to hide (nothing is deleted, so references stay intact).
+    hidden_sheets: sheet names to hide; the active tab moves to the first visible sheet.
     Cell styles (fonts, borders, number formats) are kept; highlighted cells get a copy of their
     style with only the fill changed.
     """
-    highlights = highlights or {}
+    highlights, hidden_rows, hidden_sheets = highlights or {}, hidden_rows or {}, hidden_sheets or set()
     src = zipfile.ZipFile(io.BytesIO(data))
     parts = sheet_parts(src)
     styles = _Styles(src.read("xl/styles.xml")) if any(highlights.values()) else None
 
     patched: dict[str, bytes] = {}
-    for sheet in set(values) | set(highlights):
+    if hidden_sheets:
+        patched["xl/workbook.xml"], _ = _hide_sheets(src.read("xl/workbook.xml"), hidden_sheets)
+    for sheet in set(values) | set(highlights) | {s for s, rows in hidden_rows.items() if rows} | hidden_sheets:
         if sheet not in parts:
             raise KeyError(f"Sheet {sheet!r} not in workbook")
         root = etree.fromstring(src.read(parts[sheet]))
@@ -227,6 +256,11 @@ def patch_workbook(data: bytes, values: dict[str, dict[str, str | None]],
         for ref, rgb in (highlights.get(sheet) or {}).items():
             _, cell = _row_and_cell(sheet_data, rows, ref)
             cell.set("s", str(styles.highlighted(int(cell.get("s", "0")), rgb)))
+        for n in sorted(hidden_rows.get(sheet) or ()):
+            _row(sheet_data, rows, n).set("hidden", "1")
+        if sheet in hidden_sheets:  # a hidden sheet can't stay selected, or Excel groups it with the active one
+            for view in root.iter(q("sheetView")):
+                view.attrib.pop("tabSelected", None)
         patched[parts[sheet]] = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
     if styles:
         patched["xl/styles.xml"] = styles.to_bytes()

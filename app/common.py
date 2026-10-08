@@ -22,8 +22,17 @@ def status_label(status: str | None) -> str:
     return STATUS_LABELS.get(status, status or "No status")
 
 
+def _status_color(status: str | None) -> str:
+    return _STATUS_COLORS.get(status, "orange" if status else "gray")
+
+
 def status_badge(status: str | None) -> None:
-    st.badge(status_label(status), color=_STATUS_COLORS.get(status, "orange" if status else "gray"))
+    st.badge(status_label(status), color=_status_color(status))
+
+
+def status_badge_md(status: str | None) -> str:
+    """The same badge as Markdown, for labels (e.g. an expander's title)."""
+    return f":{_status_color(status)}-badge[{status_label(status)}]"
 
 
 def status_help() -> str:

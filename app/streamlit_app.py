@@ -26,6 +26,7 @@ kb_admin = [
 ]
 review_admin = [
     st.Page(views / "smes.py", title="SMEs", icon=":material/group:", url_path="smes"),
+    st.Page(views / "partners.py", title="Partners", icon=":material/handshake:", url_path="partners"),
     st.Page(views / "module_list.py", title="Modules", icon=":material/category:", url_path="modules"),
 ]
 admin = kb_admin + review_admin

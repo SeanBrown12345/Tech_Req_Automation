@@ -7,7 +7,7 @@ import json
 import pandas as pd
 import streamlit as st
 
-from app.common import STATUS_LABELS, status_badge, status_label
+from app.common import status_badge, status_badge_md, status_label
 from kb import draft, modules
 
 CONF_LABELS = {"high": "High", "medium": "Medium", "low": "Low"}
@@ -24,6 +24,13 @@ def refresh() -> None:
     st.session_state.grid_rev = st.session_state.get("grid_rev", 0) + 1
 
 
+def set_selection(key: str, all_rows: bool) -> None:
+    """Tick every row of the grid with this key (all_rows=True) or none; redraws it, so ticks made by hand
+    are replaced."""
+    st.session_state[f"select_all:{key}"] = all_rows
+    refresh()
+
+
 def _rows_sig(view: pd.DataFrame) -> str:
     """The grid's edits are stored by position, so when its rows change (an approved row leaves a
     "to review" list) it must start afresh, or an edit would land on the row that moved up."""
@@ -31,9 +38,11 @@ def _rows_sig(view: pd.DataFrame) -> str:
 
 
 def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: int | None = None,
-         returned: bool = False) -> None:
+         returned: bool = False, selectable: bool = False) -> list[int]:
     """Editable grid of drafted rows (`view`: rows of one sheet of one draft). `returned` adds who sent
-    each row back, for rows SMEs unassigned. The height fits the rows, up to 520px, unless given."""
+    each row back, for rows SMEs unassigned. `selectable` adds a Select tick box per row; the ticked
+    row numbers are returned (ticking isn't an edit, nothing is saved). The height fits the rows, up
+    to 520px, unless given."""
     if saved := st.session_state.pop("grid_saved", 0):
         st.toast(f"Saved {saved} change{'s' if saved > 1 else ''}")
     sheet = sheet_plan["name"]
@@ -41,8 +50,8 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
     fields = [f for f in sheet_plan["fields"] if f.get("include", True)]
     answers = [json.loads(f if isinstance(f, str) else a) for f, a in zip(view.final, view.ai)]  # edits, else AI
     frame = pd.DataFrame({
+        **({"Select": [st.session_state.get(f"select_all:{key}", False)] * len(view)} if selectable else {}),
         "Row": view.row_num.values,
-        "ID": view.req_id.values,
         "Requirement": [f"{r}  (under: {p})" if isinstance(p, str) and p else r
                         for p, r in zip(view.parent_text, view.requirement)],
         **({"Unassigned by": view.returned_by.values} if returned else {}),
@@ -56,6 +65,7 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
         "Approved": view.reviewed.astype(bool).values,
     })
     config = {
+        "Select": st.column_config.CheckboxColumn("", width=40, help="Tick rows to assign them or set their module"),
         "Row": st.column_config.NumberColumn(width="small"),
         "Requirement": st.column_config.TextColumn(width="large"),
         "Confidence": st.column_config.TextColumn(width="small"),
@@ -76,7 +86,7 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
             config[f["label"]] = st.column_config.TextColumn(width="large")
     edited = st.data_editor(frame, hide_index=True, width="stretch", column_config=config,
                             height=height or min(520, 38 + 35 * len(view)),
-                            disabled=["Row", "ID", "Requirement", "Confidence", "Status", "Unassigned by"],
+                            disabled=["Row", "Requirement", "Confidence", "Status", "Unassigned by"],
                             key=f"grid:{key}:{_rows_sig(view)}:{st.session_state.get('grid_rev', 0)}")
 
     # Persist edits.
@@ -95,18 +105,23 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
             draft.set_module(job_id, sheet, [row_num], after.Module)
         if name_or_none(after["Assigned to"]) != name_or_none(before["Assigned to"]):
             draft.assign(job_id, sheet, [row_num], name_or_none(after["Assigned to"]))
-        changed += not after.equals(before)
+        changed += not after.drop("Select", errors="ignore").equals(before.drop("Select", errors="ignore"))
     if changed:
         # Rerun so everything drawn before this grid (board totals, other grids) shows the change too.
         st.session_state.grid_saved = changed
         st.rerun()
+    return edited.loc[edited.Select, "Row"].astype(int).tolist() if selectable else []
 
 
 def details(view: pd.DataFrame, key: str) -> None:
     """Pick a row and see why the AI answered it as it did."""
     pick = st.selectbox("Row", view.row_num.tolist(), key=f"why:{key}",
-                        format_func=lambda n: f"Row {n}: {view.set_index('row_num').loc[n, 'requirement'][:100]}")
+                        format_func=lambda n: f"Row {n}: {view.set_index('row_num').loc[n, 'requirement'][:80]}")
     r = view.set_index("row_num").loc[pick]
+    with st.container(border=True):  # the full requirement; the picker only shows its start
+        if isinstance(r.parent_text, str) and r.parent_text:
+            st.caption(f"Under: {r.parent_text}")
+        st.markdown(r.requirement)
     h1, h2 = st.columns([1, 5])
     with h1:
         status_badge(r.status)
@@ -131,7 +146,7 @@ def evidence(r, expanded: int = 0) -> None:
         st.caption("None: no similar past answers were found.")
     for i, e in enumerate(past):
         sim = f" · similarity {e['similarity']:.2f}" if e.get("similarity") is not None else ""
-        with st.expander(f"{e['id']} · {STATUS_LABELS.get(e['status'], e['status'])} · {e['client']} "
-                         f"({e['submitted'] or '?'}){sim}", expanded=i < expanded):
+        with st.expander(f"{status_badge_md(e['status'])} {e['client']} ({e['submitted'] or '?'}){sim}",
+                         expanded=i < expanded):
             st.write(e["requirement"])
             st.caption(e["comment"] or "_No comment_")
