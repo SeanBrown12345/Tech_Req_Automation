@@ -129,13 +129,15 @@ def _rows_sig(view: pd.DataFrame) -> str:
 
 
 def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: int | None = None,
-         returned: bool = False, selectable: bool = False, reviewer: bool = False) -> list[int]:
+         returned: bool = False, selectable: bool = False, reviewer: bool = False,
+         wrap: bool | None = None) -> list[int]:
     """Editable grid of drafted rows (`view`: rows of one sheet of one draft). `returned` adds who sent
     each row back, for rows SMEs unassigned. `selectable` adds a Select tick box per row; the ticked
     row numbers are returned (ticking isn't an edit, nothing is saved). `reviewer` is the SME's own
     view on the task board: Row, Requirement, the answers, Confidence, Needs pricing and Approved only,
-    with a narrative/comments answer column titled just "Comments". The height fits the rows, up to
-    520px, unless given."""
+    with a narrative/comments answer column titled just "Comments". `wrap` wraps long text in taller rows;
+    left as None, the grid offers its own Wrap text toggle in fullscreen only. The height fits the rows,
+    up to 520px, unless given."""
     sheet = sheet_plan["name"]
     module_names = modules.names() if modules.load() else []
     fields = [f for f in sheet_plan["fields"] if f.get("include", True)]
@@ -176,20 +178,22 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
         else:
             comments = reviewer and any(w in f["label"].lower() for w in ("comment", "narrative"))
             config[f["label"]] = st.column_config.TextColumn("Comments" if comments else None, width="large")
-    # Wrap text (fullscreen only, see _WRAP_HTML): taller rows, so long requirements and written answers show
-    # in full.
+    # Wrap text: taller rows, so long requirements and written answers show in full. Set by the caller, or
+    # else a toggle shown in fullscreen only (see _WRAP_HTML).
     box = hashlib.sha1(key.encode()).hexdigest()[:10]
     with st.container(key=f"gridbox-{box}"):
-        with st.container(key=f"gridwrap-{box}"):  # hidden outside fullscreen, so its contents take no space
-            st.html(_WRAP_HTML, unsafe_allow_javascript=True)
-            wrap = st.toggle("Wrap text", key=f"wrap:{key}",
-                             help="Make rows tall enough to show the whole requirement and written answers")
+        if wrap is None:
+            with st.container(key=f"gridwrap-{box}"):  # hidden outside fullscreen, so its contents take no space
+                st.html(_WRAP_HTML, unsafe_allow_javascript=True)
+                wrap = st.toggle("Wrap text", key=f"wrap:{key}",
+                                 help="Make rows tall enough to show the whole requirement and written answers")
         written = [f["label"] for f in fields if f["kind"] not in ("choice", "marks")]
         row_height = _wrapped_row_height(frame[["Requirement", *written]].stack()) if wrap else 35
         edited = st.data_editor(frame, hide_index=True, width="stretch", column_config=config,
                                 height=height or min(760 if wrap else 520, 38 + (row_height + 1) * len(view)),
                                 row_height=row_height if wrap else None,
-                                column_order=["Row", "Requirement", *[f["label"] for f in fields],
+                                column_order=[*(["Select"] if selectable else []), "Row", "Requirement",
+                                              *[f["label"] for f in fields],
                                               "Confidence", "Cost", "Approved"] if reviewer else None,
                                 disabled=["Row", "Requirement", "Confidence", "Status", "Unassigned by"],
                                 key=f"grid:{key}:{_rows_sig(view)}:{st.session_state.get('grid_rev', 0)}")

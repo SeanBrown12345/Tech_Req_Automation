@@ -138,44 +138,26 @@ def person_view(rows: pd.DataFrame, person: str) -> None:
     if partner:
         partner_view(mine, person)
         return
-    st.caption("Your assigned sheets. **Start review** takes you through the rows one at a time, "
-               "least confident first, then the ones that need pricing.")
+    st.caption("Your assigned sheets. **Review** takes you through the rows one at a time, least "
+               "confident first, then the ones that need pricing. **Review in table** shows them all at once.")
     for (job_id, sheet), view in mine.groupby(["job_id", "sheet"], sort=False):
-        sheet_plan, multi = _sheet_plan(view, sheet)
+        _, multi = _sheet_plan(view, sheet)
         c = _counts(view)
-        busy = c["left"]
         with st.container(border=True):
-            title, action = st.columns([4, 1], vertical_alignment="center")
+            title, actions = st.columns([3, 2], vertical_alignment="center")
             title.markdown(f"#### {view.draft.iloc[0]}" + (f" · {sheet}" if multi else ""))
-            label = "Start review" if c["left"] else "Review again"
-            action.button(label, key=f"start:{job_id}:{sheet}",
-                          icon=":material/play_arrow:", type="primary" if busy else "secondary",
-                          width="stretch", on_click=_start_review, args=(person, job_id, sheet, view))
+            with actions.container(horizontal=True, horizontal_alignment="right"):
+                st.button("Review" if c["left"] else "Review again", key=f"start:{job_id}:{sheet}",
+                          icon=":material/play_arrow:", type="primary" if c["left"] else "secondary",
+                          on_click=_start_review, args=(person, job_id, sheet, view))
+                st.button("Review in table", key=f"table:{job_id}:{sheet}", icon=":material/table_rows:",
+                          on_click=_go, kwargs={"person": person, "draft": job_id, "sheet": sheet, "mode": "table"})
             m = st.columns(4)
             m[0].metric("Rows", f"{c['rows']:,}")
             m[1].metric("To review", f"{c['left']:,}")
             m[2].metric("Low confidence", c["low"], help="Not yet approved")
             m[3].metric("Needs pricing", c["pricing"], help="Not yet approved")
             st.progress(c["approved"] / c["rows"], text=f"{c['approved']:,} of {c['rows']:,} approved")
-            with st.expander("Browse the rows"):
-                _browse(person, job_id, sheet_plan, view)
-
-
-def _browse(person: str, job_id: str, sheet_plan: dict, view: pd.DataFrame) -> None:
-    """A sheet's rows in the grid, narrowed by Show, Section and Module."""
-    key = f"board:{person}:{job_id}:{sheet_plan['name']}"
-    view = review_grid.with_sections(view.drop(columns=["who", "draft"]))
-    f1, f2, f3 = st.columns(3)
-    show = f1.selectbox("Show", review_grid.SHOW, key=f"{key}:show")
-    section = review_grid.section_select(f2, view, key=f"{key}:section")
-    module = review_grid.module_select(f3, view, key=f"{key}:module")
-    view = review_grid.section_and_module(review_grid.show_rows(view, show), section, module)
-    if view.empty:
-        st.caption("No rows match.")
-        return
-    review_grid.grid(job_id, sheet_plan, view, key=f"{key}:{show}:{section}:{module}", reviewer=True)
-    st.markdown("**Answer details**")
-    review_grid.details(view, key=key)
 
 
 # =================================================================================================
@@ -340,26 +322,64 @@ def _reassign(person: str, job_id: str, sheet: str, row_num: int, fields: list[d
         st.session_state.review_notice = f"Row {row_num} handed to {to}."
 
 
-def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str) -> None:
+MODES = {"Row by row": None, "Table": "table"}
+# Switching mode or opening a row from the table counts as moving to a new view (review_nav); the browser
+# scrolls to the top when it sees a new count. Streamlit keeps a page scrolled to the bottom while it fills
+# in, so the new view would otherwise open part way down; it scrolls again once the last elements settle.
+_TO_TOP = """<script>
+if (window.reqfillReviewNav !== NAV) {
+    window.reqfillReviewNav = NAV;
+    const toTop = () => document.querySelector('[data-testid="stMain"]')?.scrollTo(0, 0);
+    toTop(); setTimeout(toTop, 150); setTimeout(toTop, 600);
+}
+</script>"""
+
+
+def _new_view() -> None:
+    st.session_state.review_nav = st.session_state.get("review_nav", 0) + 1
+
+
+def _switch_mode(person: str, job_id: str, sheet: str, key: str) -> None:
+    if (picked := st.session_state[key]) is not None:  # clicking the current mode again leaves it as it is
+        _new_view()
+        _go(person=person, draft=job_id, sheet=sheet, mode=MODES[picked])
+
+
+def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str, mode: str | None) -> None:
+    """One sheet of one person's rows, reviewed row by row or in a table (SMEs can switch; partners'
+    answers are reviewed row by row)."""
     if notice := st.session_state.pop("review_notice", None):
         st.toast(notice, icon=":material/move_item:")
     view = rows[(rows.who == person) & (rows.job_id == job_id) & (rows.sheet == sheet)]
+    partner = person in draft.partners()
     rv = st.session_state.get("review")
     if not rv or (rv["job"], rv["sheet"]) != (job_id, sheet):  # opened from a link or refreshed
-        rv = st.session_state.review = {"job": job_id, "sheet": sheet,
-                                        "queue": _queue(view, person in draft.partners()), "pos": 0}
+        rv = st.session_state.review = {"job": job_id, "sheet": sheet, "queue": _queue(view, partner), "pos": 0}
     queue = [n for n in rv["queue"] if n in set(view.row_num)]  # rows reassigned meanwhile drop out
     rv["queue"], rv["pos"] = queue, min(rv["pos"], len(queue))
 
-    st.button(f"Back to {person}'s sheets", icon=":material/arrow_back:", type="tertiary",
-              on_click=_go, kwargs={"person": person})
+    with st.container(key="board-back"):
+        st.button("", icon=":material/arrow_back:", type="tertiary", help=f"Back to {person}'s sheets",
+                  on_click=_go, kwargs={"person": person})
     if view.empty:
         st.info("These rows are no longer assigned to you.")
         return
     sheet_plan, multi = _sheet_plan(view, sheet)
-    st.title(view.draft.iloc[0] + (f" · {sheet}" if multi else ""))
+    title = view.draft.iloc[0] + (f" · {sheet}" if multi else "")
+    if partner:
+        st.title(title)
+    else:
+        head, switch = st.columns([3, 1], vertical_alignment="center")
+        head.title(title)
+        key = f"mode:{job_id}:{sheet}"
+        st.session_state[key] = next(k for k, v in MODES.items() if v == mode)  # follow the address
+        switch.segmented_control("Review mode", list(MODES), key=key, label_visibility="collapsed",
+                                 width="stretch", on_change=_switch_mode, args=(person, job_id, sheet, key))
     approved = int(view.reviewed.sum())
     st.progress(approved / len(view), text=f"{approved:,} of {len(view):,} approved")
+    if mode == "table" and not partner:
+        _table_review(person, job_id, sheet, view, sheet_plan)
+        return
 
     if rv["pos"] >= len(queue):
         st.success(f"That's every row in this review. {len(view) - approved:,} left unapproved on this sheet."
@@ -449,10 +469,52 @@ def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str) -> Non
 
 
 # =================================================================================================
+# Table review
+# =================================================================================================
+def _open_row(person: str, job_id: str, sheet: str, view: pd.DataFrame, row_num: int) -> None:
+    """Go from the table to one row, row by row; Next carries on through the usual review order."""
+    queue = [n for n in _queue(view) if n != row_num]
+    st.session_state.review = {"job": job_id, "sheet": sheet, "queue": [row_num, *queue], "pos": 0}
+    review_grid.refresh()  # the table's ticks start clear next time
+    _new_view()
+    _go(person=person, draft=job_id, sheet=sheet)
+
+
+def _table_review(person: str, job_id: str, sheet: str, view: pd.DataFrame, sheet_plan: dict) -> None:
+    """The sheet's rows in an editable table across the full page width, narrowed by Show, Section and
+    Module; tick a row to open it row by row."""
+    st.html("<style>[data-testid='stMainBlockContainer'] { max-width: none; padding-left: 5rem; "
+            "padding-right: 2rem; }</style>")
+    key = f"board:{person}:{job_id}:{sheet}"
+    rows = review_grid.with_sections(view.drop(columns=["who", "draft"]))
+    f1, f2, f3 = st.columns([2, 3, 2])
+    show = f1.selectbox("Show", review_grid.SHOW, key=f"{key}:show")
+    section = review_grid.section_select(f2, rows, key=f"{key}:section")
+    module = review_grid.module_select(f3, rows, key=f"{key}:module")
+    shown = review_grid.section_and_module(review_grid.show_rows(rows, show), section, module)
+    if shown.empty:
+        st.caption("No rows match.")
+        return
+    # Above the table: Wrap text, then opening a ticked row (drawn after the table, which says what's ticked).
+    bar = st.container(horizontal=True, vertical_alignment="center", gap="large")
+    wrap = bar.toggle("Wrap text", key=f"{key}:wrap", help="Taller rows that show the whole requirement and answers")
+    ticked = review_grid.grid(job_id, sheet_plan, shown, key=f"{key}:{show}:{section}:{module}", height=640,
+                              reviewer=True, selectable=True, wrap=wrap)
+    if len(ticked) == 1:
+        bar.button(f"Open row {ticked[0]} row by row", icon=":material/open_in_full:", type="primary",
+                   on_click=_open_row, args=(person, job_id, sheet, view, ticked[0]))
+    else:
+        bar.caption("Tick one row to open it row by row.")
+    st.markdown("**Answer details**")
+    review_grid.details(shown, key=key)
+
+
+# =================================================================================================
 rows = _load()
-person, job_id, sheet = (st.query_params.get(k) for k in ("person", "draft", "sheet"))
+person, job_id, sheet, mode = (st.query_params.get(k) for k in ("person", "draft", "sheet", "mode"))
 if person and job_id and sheet:
-    review_view(rows, person, job_id, sheet)
+    review_view(rows, person, job_id, sheet, mode)
+    st.html(_TO_TOP.replace("NAV", str(st.session_state.get("review_nav", 0))), unsafe_allow_javascript=True)
 elif person:
     person_view(rows, person)
 else:
