@@ -31,6 +31,97 @@ def set_selection(key: str, all_rows: bool) -> None:
     refresh()
 
 
+# ---- Filters shared by the draft page and the task board ----------------------------------------
+SHOW = ["All", "Low confidence", "Needs pricing", "Approved", "Needs Review"]
+ALL_SECTIONS, ALL_MODULES, NO_MODULE = "All sections", "All modules", "Not detected yet"
+
+
+def show_rows(view: pd.DataFrame, show: str) -> pd.DataFrame:
+    """Narrow drafted rows to one of the SHOW options."""
+    if show == "Low confidence":
+        return view[view.confidence == "low"]
+    if show == "Needs pricing":
+        return view[view.cost_impact == 1]
+    if show == "Approved":
+        return view[view.reviewed == 1]
+    if show == "Needs Review":
+        return view[view.reviewed == 0]
+    return view
+
+
+def with_sections(view: pd.DataFrame) -> pd.DataFrame:
+    """Add a `section` column: the coarsest heading level that varies in these rows (worksheets use
+    different ones)."""
+    contexts = [json.loads(c) if isinstance(c, str) and c else {} for c in view.context]
+    level = next((lv for lv in ("category", "section", "subcategory")
+                  if len({c.get(lv) for c in contexts} - {None}) > 1), None)
+    return view.assign(section=[c.get(level) if level else None for c in contexts])
+
+
+def section_select(col, view: pd.DataFrame, key: str) -> str:
+    """Section picker over a with_sections view."""
+    sections = sorted(set(view.section) - {None}, key=str.lower)
+    return col.selectbox("Section", [ALL_SECTIONS, *sections], key=key, disabled=not sections)
+
+
+def module_select(col, view: pd.DataFrame, key: str) -> str:
+    """Module picker with row counts; NO_MODULE picks rows modules weren't detected for."""
+    module_names = modules.names() if modules.load() else []
+    counts = view.module.value_counts()
+    options = [ALL_MODULES, *[m for m in module_names if m in counts], *([NO_MODULE] if view.module.isna().any() else [])]
+    return col.selectbox("Module", options, key=key, disabled=not module_names,
+                         format_func=lambda o: f"{o} ({int(counts.get(o, 0)):,})" if o in counts else o,
+                         help="The product module each requirement belongs to; set by **Detect modules**, "
+                              "or change it in the grid's Module column. The list is in **Admin › Modules**.")
+
+
+def section_and_module(view: pd.DataFrame, section: str, module: str) -> pd.DataFrame:
+    if section != ALL_SECTIONS:
+        view = view[view.section == section]
+    if module == NO_MODULE:
+        return view[view.module.isna()]
+    if module != ALL_MODULES:
+        return view[view.module == module]
+    return view
+
+
+def _wrapped_row_height(texts) -> int:
+    """Row height that shows the longest of `texts` in full in a "large" column (~55 characters a line),
+    capped at 12 lines. The grid has one height for every row, so all rows get it."""
+    lines = max((len(t) // 55 + 1 for t in texts if isinstance(t, str)), default=1)
+    return 16 + 20 * min(lines, 12)
+
+
+# Wrap text only exists in fullscreen. A fullscreen grid's toolbar button reads "Close fullscreen": while it
+# does, that grid's toggle shows, pinned top left over the fullscreen view; otherwise it's hidden. When the
+# grid leaves fullscreen, the script switches wrapping back off, so the table on the page is never wrapped.
+_WRAP_HTML = """<style>
+[class*="st-key-gridwrap-"] { display: none; }
+[class*="st-key-gridbox-"]:has(button[aria-label="Close fullscreen"]) [class*="st-key-gridwrap-"] {
+    display: flex; position: fixed; top: 15px; left: 1rem; z-index: 1000051; width: auto;  /* level with the toolbar */
+}
+/* The page code (this style and script) sits in the toggle's container; it takes no space there. */
+[class*="st-key-gridwrap-"] [data-testid="stElementContainer"]:has([data-testid="stHtml"]) { display: none; }
+</style>
+<script>
+if (!window.reqfillWrapWatch) {
+    window.reqfillWrapWatch = true;
+    const wasFullscreen = new WeakSet();
+    new MutationObserver(() => {
+        for (const box of document.querySelectorAll('[class*="st-key-gridbox-"]')) {
+            if (box.querySelector('button[aria-label="Close fullscreen"]')) {
+                wasFullscreen.add(box);
+            } else if (wasFullscreen.has(box)) {
+                wasFullscreen.delete(box);
+                const toggle = box.querySelector('[class*="st-key-gridwrap-"] input[type="checkbox"]');
+                if (toggle && toggle.checked) toggle.click();
+            }
+        }
+    }).observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ["aria-label"]});
+}
+</script>"""
+
+
 def _rows_sig(view: pd.DataFrame) -> str:
     """The grid's edits are stored by position, so when its rows change (an approved row leaves a
     "to review" list) it must start afresh, or an edit would land on the row that moved up."""
@@ -38,13 +129,13 @@ def _rows_sig(view: pd.DataFrame) -> str:
 
 
 def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: int | None = None,
-         returned: bool = False, selectable: bool = False) -> list[int]:
+         returned: bool = False, selectable: bool = False, reviewer: bool = False) -> list[int]:
     """Editable grid of drafted rows (`view`: rows of one sheet of one draft). `returned` adds who sent
     each row back, for rows SMEs unassigned. `selectable` adds a Select tick box per row; the ticked
-    row numbers are returned (ticking isn't an edit, nothing is saved). The height fits the rows, up
-    to 520px, unless given."""
-    if saved := st.session_state.pop("grid_saved", 0):
-        st.toast(f"Saved {saved} change{'s' if saved > 1 else ''}")
+    row numbers are returned (ticking isn't an edit, nothing is saved). `reviewer` is the SME's own
+    view on the task board: Row, Requirement, the answers, Confidence, Needs pricing and Approved only,
+    with a narrative/comments answer column titled just "Comments". The height fits the rows, up to
+    520px, unless given."""
     sheet = sheet_plan["name"]
     module_names = modules.names() if modules.load() else []
     fields = [f for f in sheet_plan["fields"] if f.get("include", True)]
@@ -83,11 +174,25 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
         elif f["kind"] == "marks":
             config[f["label"]] = st.column_config.SelectboxColumn(options=[f["labels"][c] for c in f["columns"]])
         else:
-            config[f["label"]] = st.column_config.TextColumn(width="large")
-    edited = st.data_editor(frame, hide_index=True, width="stretch", column_config=config,
-                            height=height or min(520, 38 + 35 * len(view)),
-                            disabled=["Row", "Requirement", "Confidence", "Status", "Unassigned by"],
-                            key=f"grid:{key}:{_rows_sig(view)}:{st.session_state.get('grid_rev', 0)}")
+            comments = reviewer and any(w in f["label"].lower() for w in ("comment", "narrative"))
+            config[f["label"]] = st.column_config.TextColumn("Comments" if comments else None, width="large")
+    # Wrap text (fullscreen only, see _WRAP_HTML): taller rows, so long requirements and written answers show
+    # in full.
+    box = hashlib.sha1(key.encode()).hexdigest()[:10]
+    with st.container(key=f"gridbox-{box}"):
+        with st.container(key=f"gridwrap-{box}"):  # hidden outside fullscreen, so its contents take no space
+            st.html(_WRAP_HTML, unsafe_allow_javascript=True)
+            wrap = st.toggle("Wrap text", key=f"wrap:{key}",
+                             help="Make rows tall enough to show the whole requirement and written answers")
+        written = [f["label"] for f in fields if f["kind"] not in ("choice", "marks")]
+        row_height = _wrapped_row_height(frame[["Requirement", *written]].stack()) if wrap else 35
+        edited = st.data_editor(frame, hide_index=True, width="stretch", column_config=config,
+                                height=height or min(760 if wrap else 520, 38 + (row_height + 1) * len(view)),
+                                row_height=row_height if wrap else None,
+                                column_order=["Row", "Requirement", *[f["label"] for f in fields],
+                                              "Confidence", "Cost", "Approved"] if reviewer else None,
+                                disabled=["Row", "Requirement", "Confidence", "Status", "Unassigned by"],
+                                key=f"grid:{key}:{_rows_sig(view)}:{st.session_state.get('grid_rev', 0)}")
 
     # Persist edits.
     changed = 0
@@ -108,7 +213,6 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
         changed += not after.drop("Select", errors="ignore").equals(before.drop("Select", errors="ignore"))
     if changed:
         # Rerun so everything drawn before this grid (board totals, other grids) shows the change too.
-        st.session_state.grid_saved = changed
         st.rerun()
     return edited.loc[edited.Select, "Row"].astype(int).tolist() if selectable else []
 

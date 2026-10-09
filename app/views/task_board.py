@@ -23,6 +23,11 @@ st.html(f"""<style>
 /* The requirement under review stands out from the rest of the page. */
 .st-key-rv-requirement {{ border-left: 4px solid {ACCENT}; padding-left: 1rem; }}
 .st-key-rv-requirement p {{ font-size: 1.15rem; line-height: 1.5; }}
+/* Back (to drafting, or to all people): an arrow in the left margin, level with the page title, taking no space in the flow. */
+[data-testid="stElementContainer"]:has(> .st-key-board-back), .st-key-board-back {{ height: 0; margin: 0; }}
+.st-key-board-back {{ position: relative; overflow: visible; }}
+.st-key-board-back button {{ position: absolute; left: -3rem; top: 2.6rem; font-size: 1.5rem; }}
+.st-key-board-back button span {{ font-size: 1.75rem; }}
 </style>""")
 card_styles()
 
@@ -93,12 +98,19 @@ def _cards(assigned: pd.DataFrame, partner: bool) -> None:
 
 
 def people_list(rows: pd.DataFrame) -> None:
+    with st.container(key="board-back"):
+        if st.button("", icon=":material/arrow_back:", type="tertiary", help="Back to drafting"):
+            st.switch_page("views/draft_worksheet.py")
     st.title("Task board")
     assigned = rows[rows.who.notna()]
     if assigned.empty:
         st.info("No one has rows to review yet. Assign rows from a draft's page: filter its review grid, "
                 "then **Assign shown rows**.")
         return
+    # People whose rows are all approved are done and drop off the board (their page still opens by link).
+    assigned = assigned[assigned.who.isin(set(assigned.who[assigned.reviewed == 0]))]
+    if assigned.empty:
+        st.success("Everyone's done: every assigned row is approved.")
     partner_names = set(draft.partners())
     smes, theirs = assigned[~assigned.who.isin(partner_names)], assigned[assigned.who.isin(partner_names)]
     if not smes.empty:
@@ -106,8 +118,6 @@ def people_list(rows: pd.DataFrame) -> None:
         _cards(smes, partner=False)
     if not theirs.empty:
         st.subheader("Partners")
-        st.caption("Partners answer by email. Open a partner to export their worksheet, import their reply and "
-                   "approve the answers they sent back.")
         _cards(theirs, partner=True)
     if unassigned := int((rows.who.isna() & rows.returned_by.isna()).sum()):
         st.caption(f"{unassigned:,} drafted rows aren't assigned to anyone yet.")
@@ -117,7 +127,8 @@ def people_list(rows: pd.DataFrame) -> None:
 # One person: their sheets
 # =================================================================================================
 def person_view(rows: pd.DataFrame, person: str) -> None:
-    st.button("All people", icon=":material/arrow_back:", type="tertiary", on_click=_go)
+    with st.container(key="board-back"):
+        st.button("", icon=":material/arrow_back:", type="tertiary", help="All people", on_click=_go)
     st.title(person)
     mine = rows[rows.who == person]
     if mine.empty:
@@ -147,10 +158,24 @@ def person_view(rows: pd.DataFrame, person: str) -> None:
             m[3].metric("Needs pricing", c["pricing"], help="Not yet approved")
             st.progress(c["approved"] / c["rows"], text=f"{c['approved']:,} of {c['rows']:,} approved")
             with st.expander("Browse the rows"):
-                review_grid.grid(job_id, sheet_plan, view.drop(columns=["who", "draft"]),
-                                 key=f"board:{person}:{job_id}:{sheet}")
-                st.markdown("**Answer details**")
-                review_grid.details(view, key=f"board:{person}:{job_id}:{sheet}")
+                _browse(person, job_id, sheet_plan, view)
+
+
+def _browse(person: str, job_id: str, sheet_plan: dict, view: pd.DataFrame) -> None:
+    """A sheet's rows in the grid, narrowed by Show, Section and Module."""
+    key = f"board:{person}:{job_id}:{sheet_plan['name']}"
+    view = review_grid.with_sections(view.drop(columns=["who", "draft"]))
+    f1, f2, f3 = st.columns(3)
+    show = f1.selectbox("Show", review_grid.SHOW, key=f"{key}:show")
+    section = review_grid.section_select(f2, view, key=f"{key}:section")
+    module = review_grid.module_select(f3, view, key=f"{key}:module")
+    view = review_grid.section_and_module(review_grid.show_rows(view, show), section, module)
+    if view.empty:
+        st.caption("No rows match.")
+        return
+    review_grid.grid(job_id, sheet_plan, view, key=f"{key}:{show}:{section}:{module}", reviewer=True)
+    st.markdown("**Answer details**")
+    review_grid.details(view, key=key)
 
 
 # =================================================================================================
@@ -204,9 +229,6 @@ def _confirm_approve_all(job_id: str, partner: str, count: int, draft_name: str)
 
 def partner_view(mine: pd.DataFrame, person: str) -> None:
     """A partner's rows, per draft: export their trimmed worksheet, import their reply, approve the answers."""
-    st.caption(f"{person} is a partner and answers by email. For each draft: **Export worksheet** gives the client's "
-               "worksheet with only their rows showing, filled with our drafted answers; email it to them, then "
-               "**import their reply**. **Review answers** takes you (the bid manager) through what they sent back.")
     if flash := st.session_state.pop("partner_flash", None):
         st.toast(flash, icon=":material/check:")
     for job_id, job_rows in mine.groupby("job_id", sort=False):

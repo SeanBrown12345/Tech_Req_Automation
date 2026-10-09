@@ -17,8 +17,10 @@ _LOGO_URI = "data:image/svg+xml;base64," + base64.b64encode(
 
 _CSS = f"""
 <style>
+/* The banner's layer sits just under a fullscreen table (Streamlit's fullscreen frame is at 1000050), so an
+   expanded table covers it instead of losing its top rows behind it. */
 .app-top-banner {{
-    position: fixed; top: 0; left: 0; right: 0; z-index: 1000060;
+    position: fixed; top: 0; left: 0; right: 0; z-index: 1000040;
     height: {BANNER_HEIGHT}; padding: 0 1.25rem;
     display: flex; align-items: center; gap: 0;
     background: {BANNER_COLOR}; color: #fff;
@@ -46,7 +48,7 @@ section[data-testid="stSidebar"] {{ top: {BANNER_HEIGHT}; height: calc(100vh - {
 [data-testid="stElementContainer"]:has(.app-top-banner) {{ position: absolute; height: 0; margin: 0; }}
 /* Task board and gear: real Streamlit page links (no page reload), pinned into the banner's right side. */
 .st-key-reqfill-gear {{
-    position: fixed; top: 0; right: 1rem; z-index: 1000061; width: auto; gap: 0.25rem;
+    position: fixed; top: 0; right: 1rem; z-index: 1000041; width: auto; gap: 0.25rem;
 }}
 .st-key-reqfill-gear [data-testid="stElementContainer"], .st-key-reqfill-gear [data-testid="stPageLink"] {{
     margin: 0; padding: 0;
@@ -65,7 +67,7 @@ section[data-testid="stSidebar"] {{ top: {BANNER_HEIGHT}; height: calc(100vh - {
 .st-key-reqfill-gear a p {{ display: none; }}
 /* Home link: an invisible page link laid exactly over the logo. */
 .st-key-reqfill-home {{
-    position: fixed; top: 0; left: 1.25rem; z-index: 1000061; width: 120px; gap: 0;
+    position: fixed; top: 0; left: 1.25rem; z-index: 1000041; width: 120px; gap: 0;
 }}
 .st-key-reqfill-home [data-testid="stElementContainer"], .st-key-reqfill-home [data-testid="stPageLink"] {{
     margin: 0; padding: 0;

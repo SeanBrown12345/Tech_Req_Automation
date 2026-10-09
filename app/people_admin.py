@@ -1,9 +1,8 @@
 """Admin page for the people rows are assigned to: SMEs (review in the app) or partners (answer by email).
-Add, edit, remove, or import them from a CSV. Partners also list the modules they cover."""
+Add, edit or remove them. Partners also list the modules they cover."""
 
 import json
 
-import pandas as pd
 import streamlit as st
 
 from kb import draft, modules
@@ -42,7 +41,7 @@ def render(kind: str) -> None:
 
     table = draft.people_table(kind)
     if table.empty:
-        st.info(f"No {text['many']} yet. Add them below, one at a time or from a CSV.")
+        st.info(f"No {text['many']} yet. Add them below.")
     else:
         shown = table.assign(modules=[", ".join(_modules(m)) for m in table.modules])
         if not partner:
@@ -123,40 +122,3 @@ def render(kind: str) -> None:
             if removing:
                 confirm_remove(person)
 
-    # ---- Import ------------------------------------------------------------------------------------
-    st.subheader("Import from CSV")
-    st.caption("A CSV with a **name** column, and optionally **email** and **areas**"
-               + (" and **modules** (separated by ;). Without a modules column, modules named in the areas text "
-                  "are picked up." if partner else ".")
-               + f" Anyone already on a list is left as they are.")
-    uploaded = st.file_uploader(f"{text['title']} (.csv)", type=["csv"], key=key("csv"))
-    if not uploaded:
-        return
-    try:
-        df = pd.read_csv(uploaded, encoding="utf-8-sig", dtype=str)
-    except Exception as e:  # noqa: BLE001 - shown to the user
-        st.error(f"Couldn't read that file: {e}")
-        return
-    df.columns = [c.strip().lower() for c in df.columns]
-    df = df.rename(columns={"area": "areas", "module": "modules"})
-    if "name" not in df.columns:
-        st.error("The file needs a **name** column.")
-        return
-    df = df.reindex(columns=["name", "email", "areas", "modules"]).map(_clean).dropna(subset=["name"])
-    if partner:
-        df["modules"] = [[m.strip() for m in v.split(";") if m.strip() in module_names] if v else modules.mentioned(a or "")
-                         for v, a in zip(df.modules, df.areas)]
-    else:
-        df = df.drop(columns="modules")
-    taken = {n.lower() for n in draft.people()}
-    df["status"] = ["Already on a list" if n.lower() in taken else "New" for n in df.name]
-    st.dataframe(df.assign(**({"modules": [", ".join(m) for m in df.modules]} if partner else {})),
-                 hide_index=True, width="stretch", column_config={"areas": st.column_config.TextColumn(width="large")})
-    new = df[df.status == "New"].drop_duplicates(subset="name")
-    label = text["one"] if len(new) == 1 else text["many"]
-    if st.button(f"Add {len(new)} new {label}", type="primary", disabled=new.empty):
-        added = sum(draft.add_person(r.name, r.email, r.areas, kind, r.modules if partner else None)
-                    for r in new.itertuples())
-        st.session_state[key("flash")] = f"Added {added} {text['one'] if added == 1 else text['many']}."
-        st.session_state.pop(key("csv"), None)
-        st.rerun()

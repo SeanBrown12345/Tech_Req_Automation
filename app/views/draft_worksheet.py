@@ -314,7 +314,7 @@ def _job_page(job_id: str):
         unassigned = done.assignee.isna()
         r = st.columns(4)
         r[0].metric("Approved", f"{approved:,}", help="Rows an SME has approved")
-        r[1].metric("Not approved", f"{len(done) - approved:,}", help="Rows still waiting for review")
+        r[1].metric("Needs Review", f"{len(done) - approved:,}", help="Rows still waiting for review")
         r[2].metric("Unassigned", f"{int((unassigned & done.returned_by.isna()).sum()):,}",
                     help="Never assigned to an SME")
         r[3].metric("Unassigned by an SME", f"{int((unassigned & done.returned_by.notna()).sum()):,}",
@@ -342,7 +342,7 @@ def _job_page(job_id: str):
         else:
             f2, f3, _ = st.columns([2, 3, 2])
             sheet = sheets[0]
-        show = f2.selectbox("Show", ["All", "Low confidence", "Needs pricing", "Approved", "Not approved", "Errors"],
+        show = f2.selectbox("Show", [*review_grid.SHOW, "Errors"],
                             key=f"show:{job_id}")
         text = f3.text_input("Find", key=f"find:{job_id}", placeholder="Search requirement text")
 
@@ -355,24 +355,10 @@ def _job_page(job_id: str):
         view = view[view.ai.notna()]
 
         # Sections and assignees narrow the grid, so a block of rows can be handed to one SME in one go.
-        # A section is the coarsest heading level that varies in this sheet (worksheets use different ones).
-        contexts = [json.loads(c) if isinstance(c, str) and c else {} for c in view.context]
-        level = next((lv for lv in ("category", "section", "subcategory")
-                      if len({c.get(lv) for c in contexts} - {None}) > 1), None)
-        view["section"] = [c.get(level) if level else None for c in contexts]
-        sections = sorted(set(view.section) - {None}, key=str.lower)
+        view = review_grid.with_sections(view)
         g1, gm, g2 = st.columns([3, 2, 2], vertical_alignment="bottom")
-        section = g1.selectbox("Section", ["All sections", *sections], key=f"section:{job_id}:{sheet}",
-                               disabled=not sections)
-        module_names = modules.names() if modules.load() else []
-        counts = view.module.value_counts()
-        NO_MODULE = "Not detected yet"
-        module_options = ["All modules", *[m for m in module_names if m in counts],
-                          *([NO_MODULE] if view.module.isna().any() else [])]
-        module = gm.selectbox("Module", module_options, key=f"module:{job_id}:{sheet}", disabled=not module_names,
-                              format_func=lambda o: f"{o} ({int(counts.get(o, 0)):,})" if o in counts else o,
-                              help="The product module each requirement belongs to; set by **Detect modules**, "
-                                   "or change it in the grid's Module column. The list is in **Admin › Modules**.")
+        section = review_grid.section_select(g1, view, key=f"section:{job_id}:{sheet}")
+        module = review_grid.module_select(gm, view, key=f"module:{job_id}:{sheet}")
         UNASSIGNED, RETURNED = "Never assigned", "Unassigned by an SME"
         n_returned = int((view.assignee.isna() & view.returned_by.notna()).sum())
         who = g2.selectbox("Assigned to", ["Anyone", UNASSIGNED, RETURNED, *draft.people()], key=f"who:{job_id}",
@@ -380,20 +366,7 @@ def _job_page(job_id: str):
                            help="**Unassigned by an SME**: rows an SME sent back as out of their area, waiting to be "
                                 "reassigned. Kept apart from rows never assigned.")
 
-        if show == "Low confidence":
-            view = view[view.confidence == "low"]
-        elif show == "Needs pricing":
-            view = view[view.cost_impact == 1]
-        elif show == "Approved":
-            view = view[view.reviewed == 1]
-        elif show == "Not approved":
-            view = view[view.reviewed == 0]
-        if section != "All sections":
-            view = view[view.section == section]
-        if module == NO_MODULE:
-            view = view[view.module.isna()]
-        elif module != "All modules":
-            view = view[view.module == module]
+        view = review_grid.section_and_module(review_grid.show_rows(view, show), section, module)
         if who == UNASSIGNED:
             view = view[view.assignee.isna() & view.returned_by.isna()]
         elif who == RETURNED:
@@ -438,7 +411,7 @@ def _job_page(job_id: str):
                 draft.assign(job_id, sheet, targets, None)
                 review_grid.set_selection(grid_key, False)
                 st.rerun()
-        if module_names:
+        if module_names := modules.names() if modules.load() else []:
             with actions.popover(f"Set module for {which}", icon=":material/category:"):
                 st.caption(f"Put the {which} in one module.")
                 new_module = st.selectbox("Module", module_names, index=None, placeholder="Pick a module",
