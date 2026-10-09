@@ -471,18 +471,38 @@ def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str, mode: 
 # =================================================================================================
 # Table review
 # =================================================================================================
-def _open_row(person: str, job_id: str, sheet: str, view: pd.DataFrame, row_num: int) -> None:
-    """Go from the table to one row, row by row; Next carries on through the usual review order."""
-    queue = [n for n in _queue(view) if n != row_num]
-    st.session_state.review = {"job": job_id, "sheet": sheet, "queue": [row_num, *queue], "pos": 0}
-    review_grid.refresh()  # the table's ticks start clear next time
-    _new_view()
-    _go(person=person, draft=job_id, sheet=sheet)
+# The Fullscreen button above the table opens the table's own fullscreen view, by clicking the matching
+# button in the table's toolbar.
+_FULLSCREEN = """<script>
+if (!window.reqfillTableFullscreen) {
+    window.reqfillTableFullscreen = true;
+    document.addEventListener("click", e => {
+        if (!e.target.closest(".st-key-table-fullscreen button")) return;
+        document.querySelector('[class*="st-key-gridbox-"] [data-testid="stElementToolbar"] '
+                               + 'button[aria-label="Fullscreen"]')?.click();
+    }, true);
+}
+</script>"""
+
+
+def _reassign_rows(person: str, job_id: str, sheet: str, row_nums: list[int], key: str) -> None:
+    """Give the ticked rows to someone else, or return them to the pool as not this person's, as the
+    row-by-row Reassign does. They leave this person's table either way."""
+    to = st.session_state.get(key)
+    if to == UNASSIGN:
+        for n in row_nums:
+            draft.return_row(job_id, sheet, n, person)
+        st.session_state.review_notice = f"{len(row_nums):,} row{'s' * (len(row_nums) != 1)} went back to the pool."
+    else:
+        draft.assign(job_id, sheet, row_nums, to)
+        st.session_state.review_notice = f"{len(row_nums):,} row{'s' * (len(row_nums) != 1)} handed to {to}."
+    st.session_state.pop(key, None)  # the picker starts empty next time
+    review_grid.refresh()  # and the table's ticks start clear
 
 
 def _table_review(person: str, job_id: str, sheet: str, view: pd.DataFrame, sheet_plan: dict) -> None:
     """The sheet's rows in an editable table across the full page width, narrowed by Show, Section and
-    Module; tick a row to open it row by row."""
+    Module; tick rows to reassign them."""
     st.html("<style>[data-testid='stMainBlockContainer'] { max-width: none; padding-left: 5rem; "
             "padding-right: 2rem; }</style>")
     key = f"board:{person}:{job_id}:{sheet}"
@@ -495,16 +515,26 @@ def _table_review(person: str, job_id: str, sheet: str, view: pd.DataFrame, shee
     if shown.empty:
         st.caption("No rows match.")
         return
-    # Above the table: Wrap text, then opening a ticked row (drawn after the table, which says what's ticked).
+    # Above the table: Wrap text and reassigning ticked rows on the left, Fullscreen on the right (all but
+    # Wrap text drawn after the table, which says what's ticked).
     bar = st.container(horizontal=True, vertical_alignment="center", gap="large")
     wrap = bar.toggle("Wrap text", key=f"{key}:wrap", help="Taller rows that show the whole requirement and answers")
     ticked = review_grid.grid(job_id, sheet_plan, shown, key=f"{key}:{show}:{section}:{module}", height=640,
                               reviewer=True, selectable=True, wrap=wrap)
-    if len(ticked) == 1:
-        bar.button(f"Open row {ticked[0]} row by row", icon=":material/open_in_full:", type="primary",
-                   on_click=_open_row, args=(person, job_id, sheet, view, ticked[0]))
-    else:
-        bar.caption("Tick one row to open it row by row.")
+    which = f"{len(ticked):,} row{'s' * (len(ticked) != 1)}"
+    with bar.popover(f"Reassign {which}", icon=":material/move_item:", disabled=not ticked,
+                     help="Out of your area? Give these rows to someone else, or return them to the pool"
+                     if ticked else "Tick rows in the table to reassign them"):
+        covering = draft.partners()
+        pick_key = f"{key}:reassign"
+        choice = st.selectbox("Reassign to", [*[n for n in draft.people() if n != person], UNASSIGN], index=None,
+                              placeholder="Pick a person", key=pick_key,
+                              format_func=lambda n: f"{n} · partner" if n in covering else n)
+        st.button("Accept", type="primary", width="stretch", disabled=choice is None,
+                  on_click=_reassign_rows, args=(person, job_id, sheet, ticked, pick_key))
+    bar.space("stretch")
+    bar.button("", icon=":material/fullscreen:", type="tertiary", key="table-fullscreen", help="Fullscreen")
+    st.html(_FULLSCREEN, unsafe_allow_javascript=True)
     st.markdown("**Answer details**")
     review_grid.details(shown, key=key)
 
