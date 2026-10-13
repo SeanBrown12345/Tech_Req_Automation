@@ -32,7 +32,7 @@ def set_selection(key: str, all_rows: bool) -> None:
 
 
 # ---- Filters shared by the draft page and the task board ----------------------------------------
-SHOW = ["All", "Low confidence", "Needs pricing", "Approved", "Needs Review"]
+SHOW = ["All", "Low confidence", "Needs pricing", "Approved", "Auto-approved", "Needs Review"]
 ALL_SECTIONS, ALL_MODULES, NO_MODULE = "All sections", "All modules", "Not detected yet"
 
 
@@ -44,6 +44,8 @@ def show_rows(view: pd.DataFrame, show: str) -> pd.DataFrame:
         return view[view.cost_impact == 1]
     if show == "Approved":
         return view[view.reviewed == 1]
+    if show == "Auto-approved":  # by the draft's auto-approve rule, not a person
+        return view[view.approved_by == "auto"]
     if show == "Needs Review":
         return view[view.reviewed == 0]
     return view

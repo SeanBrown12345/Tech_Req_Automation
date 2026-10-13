@@ -26,6 +26,56 @@ def _plan(data: bytes, header_rows: tuple) -> dict:
     return draft.guess_plan(data, _read(data), dict(header_rows))
 
 
+def _toggle_auto_approve(job_id: str, rule: dict, key: str) -> None:
+    """The tick box on an existing draft: switching auto-approve on or off applies at once."""
+    n = draft.set_auto_approve(job_id, rule | {"enabled": st.session_state[key]})
+    st.session_state.auto_note = (f"Auto-approve now covers {n:,} rows." if st.session_state[key]
+                                  else "Auto-approve is off; its approvals went back to Needs Review.")
+    review_grid.refresh()
+
+
+def _auto_approve(rule: dict, key: str, job_id: str | None = None) -> dict:
+    """An Auto-approve tick box beside a dropdown holding which rows it approves and how similar a past answer
+    must be. On an existing draft (`job_id`) the tick box applies at once and the dropdown has Apply; for a
+    new draft the picked rule is just returned."""
+    row = st.container(horizontal=True, vertical_alignment="center", gap="small")
+    enabled = row.checkbox(
+        "Auto-approve", value=rule["enabled"], key=f"{key}:on",
+        on_change=_toggle_auto_approve if job_id else None, args=(job_id, rule, f"{key}:on") if job_id else None,
+        help="Approve rows without a person when the AI is sure and a past answer is nearly identical. Rows "
+             "flagged for pricing always need a person, and anything a person approves or unapproves is left alone.")
+    mode = st.session_state.get(f"{key}:mode", rule["mode"])
+    sim = st.session_state.get(f"{key}:sim", round(rule["min_sim"] * 100))
+    # The dropdown is wide enough for the longest option name.
+    st.html('<style>[data-testid="stPopoverBody"]:has([class*="st-key-auto"][class*="-mode"]) '
+            '{ min-width: 27rem; }</style>')
+    with row.popover("Configure", key=f"{key}:menu",
+                     help=f"Approves: {draft.AUTO_MODES[mode]}, {sim}% similar or more"):
+        mode = st.selectbox(
+            "Approve", list(draft.AUTO_MODES), index=list(draft.AUTO_MODES).index(rule["mode"]),
+            format_func=draft.AUTO_MODES.get, key=f"{key}:mode",
+            help="**High confidence**: any row the AI is sure of.  \n"
+                 "**Standard**: only rows answered as standard functionality (or a plain Yes).  \n"
+                 "**Standard, nothing written**: and with no comment or narrative.")
+        sim = st.slider("Closest past answer at least", 85, 100, round(rule["min_sim"] * 100),
+                        format="%d%% similar", key=f"{key}:sim",
+                        help="High confidence already needs 85%. 95% means the past requirement is all but identical.")
+        picked = {"enabled": enabled, "mode": mode, "min_sim": sim / 100}
+        if job_id:
+            a1, a2 = st.columns(2)
+            if a1.button("Apply", type="primary", width="stretch", disabled=picked == rule, key=f"{key}:apply"):
+                n = draft.set_auto_approve(job_id, picked)
+                st.session_state.auto_note = (f"Auto-approve now covers {n:,} rows." if enabled
+                                              else "Saved; tick Auto-approve to use it.")
+                review_grid.refresh()
+                st.rerun()
+            if a2.button("Make default", width="stretch", disabled=picked == draft.auto_approve_default(),
+                         key=f"{key}:default", help="New drafts start with this setting"):
+                draft.set_auto_approve_default(picked)
+                st.toast("New drafts will start with this auto-approve setting.")
+    return picked
+
+
 def _jobs() -> pd.DataFrame:
     conn = draft.connect_drafts()
     try:
@@ -213,15 +263,18 @@ def new_draft():
         "What the client's workbook says about how to respond (edit freely - the AI follows this)",
         value=plan["instructions"], height=220, key=k("instructions"))
 
+    auto = _auto_approve(draft.auto_approve_default(), k("auto"))
+
     rows = draft.collect_rows(plan, _read(data))
-    no_options = [f"{sp['name']} column {f['columns'][0]}" for sp in plan["sheets"] if sp["include"]
+    no_options =[f"{sp['name']} column {f['columns'][0]}" for sp in plan["sheets"] if sp["include"]
                   for f in sp["fields"] if f["include"] and f["kind"] == "choice" and not f.get("options")]
     if no_options:
         st.error("Add response options (or switch to free text) before starting: " + ", ".join(no_options))
     st.write(f"**{len(rows):,}** requirement rows have empty answer cells to fill"
              f" · about {max(1, round(len(rows) / 100))} min")
     if st.button("Start drafting", type="primary", disabled=not rows or bool(no_options)):
-        job_id, _ = draft.create_job(name.strip() or uploaded.name, client.strip() or None, uploaded.name, data, plan)
+        job_id, _ = draft.create_job(name.strip() or uploaded.name, client.strip() or None, uploaded.name, data, plan,
+                                     auto)
         draft.start_job(job_id)
         st.session_state.draft_job_next = job_id
         st.rerun()
@@ -318,14 +371,20 @@ def _job_page(job_id: str):
         st.subheader("Review")
         # Progress across the whole draft (every sheet), before the filters narrow the grid.
         approved = int(done.reviewed.sum())
+        auto_approved = int((done.approved_by == "auto").sum())
         unassigned = done.assignee.isna()
         r = st.columns(4)
-        r[0].metric("Approved", f"{approved:,}", help="Rows an SME has approved")
+        r[0].metric("Approved", f"{approved:,}", help=f"Rows an SME has approved, plus {auto_approved:,} approved "
+                                                       "automatically (Show › Auto-approved lists them)")
         r[1].metric("Needs Review", f"{len(done) - approved:,}", help="Rows still waiting for review")
         r[2].metric("Unassigned", f"{int((unassigned & done.returned_by.isna()).sum()):,}",
                     help="Never assigned to an SME")
         r[3].metric("Unassigned by an SME", f"{int((unassigned & done.returned_by.notna()).sum()):,}",
                     help="Sent back by an SME as out of their area, waiting to be reassigned")
+        with st.container(key="auto-approve"):
+            _auto_approve(draft.auto_approve_rule(job), f"auto:{job_id}", job_id)
+        if note := st.session_state.pop("auto_note", None):
+            st.toast(note, icon=":material/check_circle:")
         if modules.load() and (undetected := int(done.module.isna().sum())):
             with st.container(border=True, horizontal=True, vertical_alignment="center"):
                 st.markdown(f"**{undetected:,}** rows don't have a module yet. Detecting them lets you filter and "

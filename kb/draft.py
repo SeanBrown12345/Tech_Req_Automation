@@ -43,6 +43,27 @@ RED, YELLOW = "FFFFC7CE", "FFFFFF00"
 _PLACEHOLDER = re.compile(r"\[[^\]]{2,}\]")
 _CONF_RANK = {"low": 0, "medium": 1, "high": 2}
 
+# Auto-approve: rows the draft's rule approves without a person. A rule is {"enabled": ..., "mode": ...,
+# "min_sim": ...}; every mode needs high confidence and a past answer at least `min_sim` similar, and never
+# approves a row flagged for pricing. The mode is kept while the rule is switched off.
+AUTO_MODES = {
+    "high": "High confidence",
+    "standard": "High confidence and Standard (comments allowed)",
+    "standard_blank": "High confidence and Standard, nothing written",
+}
+AUTO_STATUSES = {"STANDARD", "SUPPORTED"}  # the Standard modes: in the product (Supported = a plain Yes)
+AUTO_OFF = {"enabled": False, "mode": "high", "min_sim": 0.95}
+
+
+def _rule(value) -> dict:
+    """A stored rule (JSON) in its current form; rules saved before the on/off switch said mode "off"."""
+    rule = json.loads(value) if isinstance(value, str) and value else {}
+    if "enabled" not in rule:
+        rule["enabled"] = rule.get("mode", "off") != "off"
+    if rule.get("mode") not in AUTO_MODES:
+        rule["mode"] = AUTO_OFF["mode"]
+    return AUTO_OFF | rule
+
 
 # ================================================================================================
 # Plan: which columns to fill, and how
@@ -164,7 +185,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     total       INTEGER NOT NULL DEFAULT 0,
     done        INTEGER NOT NULL DEFAULT 0,
     message     TEXT,
-    model       TEXT
+    model       TEXT,
+    auto_approve TEXT                   -- JSON rule (see AUTO_MODES); NULL = off
 );
 CREATE TABLE IF NOT EXISTS rows (
     job_id       TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
@@ -187,6 +209,7 @@ CREATE TABLE IF NOT EXISTS rows (
     rationale    TEXT,
     evidence     TEXT,                  -- JSON list of past answers shown to the model
     reviewed     INTEGER NOT NULL DEFAULT 0,  -- approved by the SME (or whoever reviewed it)
+    approved_by  TEXT,                  -- auto (the draft's auto-approve rule) | person; NULL = untouched
     assignee     TEXT,                  -- SME responsible for the row; NULL = unassigned
     returned_by  TEXT,                  -- unassigned because this SME handed it back (the "returned" pool)
     return_note  TEXT,                  -- their reason, if they gave one
@@ -219,8 +242,9 @@ CREATE TABLE IF NOT EXISTS people (
 
 # Columns added after the first release: existing databases get them on connect.
 _ADDED_COLUMNS = {
+    "jobs": {"auto_approve": "TEXT"},
     "rows": {"assignee": "TEXT", "returned_by": "TEXT", "return_note": "TEXT", "module": "TEXT",
-             "partner_status": "TEXT", "sent_at": "TEXT", "received_at": "TEXT"},
+             "partner_status": "TEXT", "sent_at": "TEXT", "received_at": "TEXT", "approved_by": "TEXT"},
     "people": {"kind": "TEXT NOT NULL DEFAULT 'sme'", "modules": "TEXT"},
 }
 
@@ -332,7 +356,8 @@ def collect_rows(plan: dict, sheets: dict[str, list[tuple]]) -> list[dict]:
     return out
 
 
-def create_job(name: str, client: str | None, filename: str, data: bytes, plan: dict) -> tuple[str, int]:
+def create_job(name: str, client: str | None, filename: str, data: bytes, plan: dict,
+               auto_approve: dict | None = None) -> tuple[str, int]:
     sheets = read_workbook(data)
     rows = collect_rows(plan, sheets)
     job_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
@@ -340,10 +365,10 @@ def create_job(name: str, client: str | None, filename: str, data: bytes, plan: 
     workbook_path(job_id).write_bytes(data)
     conn = connect_drafts()
     with conn:
-        conn.execute("INSERT INTO jobs (job_id, name, client, filename, created_at, status, plan, total, model)"
-                     " VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, ?)",
+        conn.execute("INSERT INTO jobs (job_id, name, client, filename, created_at, status, plan, total, model,"
+                     " auto_approve) VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?)",
                      (job_id, name, client, filename, datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                      json.dumps(plan), len(rows), MODEL))
+                      json.dumps(plan), len(rows), MODEL, json.dumps(auto_approve or AUTO_OFF)))
         conn.executemany(
             "INSERT INTO rows (job_id, sheet, row_num, req_id, requirement, parent_text, context, fill, prefilled)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -627,6 +652,7 @@ def _run_job(job_id: str, exclude_sources: list[str] | None) -> None:
             for future in as_completed(futures):
                 sheet, results, errors = future.result()
                 _save(conn, job_id, sheet, results, errors)
+                apply_auto_approve(job_id)  # as rows arrive, so nobody starts reviewing one the rule approves
 
         remaining = conn.execute("SELECT COUNT(*) FROM rows WHERE job_id = ? AND ai IS NULL", (job_id,)).fetchone()[0]
         stopped = conn_status(job_id) == "stopping"
@@ -675,10 +701,86 @@ def save_review(job_id: str, sheet: str, row_num: int, final: dict | None = None
         if final is not None:
             conn.execute("UPDATE rows SET final = ? WHERE job_id = ? AND sheet = ? AND row_num = ?",
                          (json.dumps(final), job_id, sheet, row_num))
-        if reviewed is not None:
-            conn.execute("UPDATE rows SET reviewed = ? WHERE job_id = ? AND sheet = ? AND row_num = ?",
-                         (int(reviewed), job_id, sheet, row_num))
+        if reviewed is not None:  # a person decided: the auto-approve rule leaves this row alone from now on
+            conn.execute("UPDATE rows SET reviewed = ?, approved_by = 'person'"
+                         " WHERE job_id = ? AND sheet = ? AND row_num = ?", (int(reviewed), job_id, sheet, row_num))
     conn.close()
+
+
+# ================================================================================================
+# Auto-approve
+# ================================================================================================
+
+def auto_approve_default() -> dict:
+    """The rule new drafts start with."""
+    conn = connect_drafts()
+    try:
+        row = conn.execute("SELECT value FROM app_settings WHERE key = 'auto_approve'").fetchone()
+        return _rule(row[0] if row else None)
+    finally:
+        conn.close()
+
+
+def set_auto_approve_default(rule: dict) -> None:
+    conn = connect_drafts()
+    with conn:
+        conn.execute("INSERT INTO app_settings (key, value) VALUES ('auto_approve', ?)"
+                     " ON CONFLICT (key) DO UPDATE SET value = excluded.value", (json.dumps(rule),))
+    conn.close()
+
+
+def auto_approve_rule(job) -> dict:
+    """A job's rule; drafts from before auto-approve existed are off."""
+    return _rule(job["auto_approve"])
+
+
+def _auto_approves(row, rule: dict, text_keys: set[str]) -> bool:
+    mode = rule["mode"]
+    if not rule["enabled"] or row["error"] or row["cost_impact"] or row["confidence"] != "high":
+        return False  # rows flagged for pricing always need a person
+    if (row["best_similarity"] or 0) < rule["min_sim"]:
+        return False
+    if mode in ("standard", "standard_blank") and row["status"] not in AUTO_STATUSES:
+        return False
+    if mode == "standard_blank":  # anything we wrote (a comment, a narrative) needs a person
+        answer = json.loads(row["final"] or row["ai"])
+        return not any(str(answer.get(k) or "").strip() for k in json.loads(row["fill"]) if k in text_keys)
+    return True
+
+
+def set_auto_approve(job_id: str, rule: dict) -> int:
+    """Change a draft's rule and re-apply it; returns how many rows it approves."""
+    conn = connect_drafts()
+    with conn:
+        conn.execute("UPDATE jobs SET auto_approve = ? WHERE job_id = ?", (json.dumps(rule), job_id))
+    conn.close()
+    return apply_auto_approve(job_id)
+
+
+def apply_auto_approve(job_id: str) -> int:
+    """Approve the drafted rows the job's rule allows, and withdraw the rule's earlier approvals it no
+    longer allows. Rows a person approved or unapproved, and partners' rows, are never touched.
+    Returns how many rows the rule approves."""
+    conn = connect_drafts()
+    try:
+        job = conn.execute("SELECT plan, auto_approve FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+        rule = auto_approve_rule(job)
+        text_keys = {sp["name"]: {f["key"] for f in sp["fields"] if f["kind"] == "text"}
+                     for sp in json.loads(job["plan"])["sheets"]}
+        rows = conn.execute("SELECT * FROM rows WHERE job_id = ? AND ai IS NOT NULL AND partner_status IS NULL"
+                            " AND (approved_by IS NULL OR approved_by = 'auto')", (job_id,)).fetchall()
+        approve = {(r["sheet"], r["row_num"]) for r in rows
+                   if _auto_approves(r, rule, text_keys.get(r["sheet"], set()))}
+        withdraw = [(r["sheet"], r["row_num"]) for r in rows
+                    if r["approved_by"] == "auto" and (r["sheet"], r["row_num"]) not in approve]
+        with conn:
+            conn.executemany("UPDATE rows SET reviewed = 1, approved_by = 'auto'"
+                             " WHERE job_id = ? AND sheet = ? AND row_num = ?", [(job_id, *k) for k in approve])
+            conn.executemany("UPDATE rows SET reviewed = 0, approved_by = NULL"
+                             " WHERE job_id = ? AND sheet = ? AND row_num = ?", [(job_id, *k) for k in withdraw])
+        return len(approve)
+    finally:
+        conn.close()
 
 
 def detect_modules(job_id: str, llm=None, progress=None) -> int:
@@ -1028,8 +1130,8 @@ def approve_partner_answers(job_id: str, partner: str) -> int:
     conn = connect_drafts()
     try:
         with conn:
-            return conn.execute("UPDATE rows SET reviewed = 1 WHERE job_id = ? AND assignee = ?"
-                                " AND partner_status = 'received' AND reviewed = 0", (job_id, partner)).rowcount
+            return conn.execute("UPDATE rows SET reviewed = 1, approved_by = 'person'"
+                                " WHERE job_id = ? AND assignee = ? AND partner_status = 'received' AND reviewed = 0", (job_id, partner)).rowcount
     finally:
         conn.close()
 
