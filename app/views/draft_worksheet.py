@@ -290,8 +290,8 @@ def _job_page(job_id: str):
 
         # ---- Download ----
         st.html(f"""<style>
-.st-key-draft-download [data-testid="stDownloadButton"] button {{ background: {ACCENT}; border-color: {ACCENT}; color: #fff; }}
-.st-key-draft-download [data-testid="stDownloadButton"] button:hover {{ filter: brightness(1.15); color: #fff; }}
+.st-key-draft-download [data-testid="stDownloadButton"] button[kind="primary"] {{ background: {ACCENT}; border-color: {ACCENT}; color: #fff; }}
+.st-key-draft-download [data-testid="stDownloadButton"] button[kind="primary"]:hover {{ filter: brightness(1.15); color: #fff; }}
 </style>""")
         with st.container(border=True, key="draft-download"):
             st.markdown("**Download the filled worksheet**")
@@ -301,12 +301,12 @@ def _job_page(job_id: str):
             yellow = d2.toggle("Yellow: needs pricing", value=True, key=f"yellow:{job_id}",
                                help="Fills the requirement cell of rows that may add implementation cost.")
             # The file is built when clicked, so it always has the latest edits and highlight choices.
-            d3.download_button("Download", lambda: draft.build_output(job_id, red, yellow), type="primary",
+            d4.download_button("Download", lambda: draft.build_output(job_id, red, yellow), type="primary",
                                file_name=f"{Path(job.filename).stem} - DRAFT.xlsx", width="stretch",
                                icon=":material/download:", on_click="ignore",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             pricing = int(done.cost_impact.sum())
-            d4.download_button("Pricing rows", lambda: draft.build_pricing_export(job_id), width="stretch",
+            d3.download_button("Pricing rows", lambda: draft.build_pricing_export(job_id), width="stretch",
                                file_name=f"{Path(job.filename).stem} - PRICING.xlsx", disabled=not pricing,
                                icon=":material/request_quote:", on_click="ignore",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

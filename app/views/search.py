@@ -6,7 +6,6 @@ from app.common import STATUS_LABELS, connect, embedder, status_badge, status_he
 from kb import analysis, store
 
 st.title("Search Knowledge Base")
-st.caption("Search past answers")
 
 conn = connect()
 options = analysis.filter_options(conn)
