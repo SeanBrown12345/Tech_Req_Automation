@@ -19,16 +19,24 @@ SAMPLE_ROWS = 300
 
 _HEADER_WORDS = re.compile(
     r"requirement|description|response|comment|narrative|req\b|req\.|#|topic|function|process|"
-    r"attribute|compl|status|module|category|group|notes|specification|availability", re.IGNORECASE)
+    r"attribute|compl|status|module|category|group|notes|specification|availability|question|answer",
+    re.IGNORECASE)
 
 _ROLE_PATTERNS = [  # checked in order; first role whose pattern matches a header wins that column
-    ("req_id", re.compile(r"^(req(uirement)?\.?\s*(#|id|no\.?|number)|#|id|item\s*#?|ref(erence)?\s*#?)$", re.I)),
-    ("comment", re.compile(r"comment|narrative|explanation|notes|remarks", re.I)),
-    ("requirement", re.compile(r"requirement|description|attribute|specification", re.I)),
+    ("req_id", re.compile(r"^(req(uirement)?\.?\s*(#|id|no\.?|number)|#|id|item\s*#?|ref(erence)?\s*#?|"
+                          r"(question|ques|q)\.?\s*(#|id|no\.?|num(ber)?))$", re.I)),
+    # Text we write. Questionnaires often have several (CAIQ: how we implement it, and what the
+    # customer is responsible for): the first is the comment, the rest are kept as further answers.
+    ("comment", re.compile(r"comment|narrative|explanation|notes|remarks|implementation (desc|detail)|responsibilit|"
+                           r"justification|additional info", re.I)),
+    ("requirement", re.compile(r"requirement|question|request|description|attribute|specification", re.I)),
     ("category", re.compile(r"functional group|category|^function$|functional area|^area$", re.I)),
     ("subcategory", re.compile(r"topic|process|sub-?category", re.I)),
 ]
-_ANSWER_HEADER = re.compile(r"response|compl|availability|status|support|meets|available", re.I)
+_ANSWER_HEADER = re.compile(r"response|compl|availability|status|support|meets|available|answer", re.I)
+# Among requirement candidates, headers starting with these name the requirement itself; a "description"
+# or "specification" can be reference text the client supplies beside it (CAIQ's "CCM Control Specification").
+_REQUIREMENT_FIRST = re.compile(r"^\s*(requirement|question|request)", re.I)
 _LEGEND_PAIR = re.compile(r"\b([A-Z][A-Z0-9-]{0,4})\s*[:=]\s*(.+?)(?=\s{2,}[A-Z][A-Z0-9-]{0,4}\s*[:=]|$)")
 
 # Keyword rules for guessing a status from a response value or its legend text. Order matters.
@@ -54,6 +62,7 @@ class SheetGuess:
     headers: dict[str, str]             # column letter -> header text
     columns: dict[str, str]             # role -> column letter
     answer_columns: list[str]           # columns holding a response value
+    text_columns: list[str]             # further text we write, beyond the comment
     mark_columns: list[str]             # columns where a mark ("X", a letter) selects the answer
     legend: dict[str, str] = field(default_factory=dict)  # code -> meaning, from rows above the header
     data_rows: int = 0
@@ -152,8 +161,14 @@ def guess_sheet(name: str, rows: list[tuple], header_row: int | None = None) -> 
                 candidates.setdefault(role, []).append(letter)
                 break
     for role, letters in candidates.items():
-        # Prefer the candidate with the most (and longest) content, e.g. the real requirement text.
-        columns[role] = max(letters, key=lambda l: (len(values(l)) > 0, avg_len(l)))
+        if role == "comment":  # the leftmost text we write is the main one
+            columns[role] = next((l for l in letters if values(l)), letters[0])
+        elif role == "requirement":  # a "Question" over a "Description" beside it, then the most content
+            columns[role] = max(letters, key=lambda l: (bool(_REQUIREMENT_FIRST.search(headers[l])),
+                                                        len(values(l)) > 0, avg_len(l)))
+        else:  # the most (and longest) content, e.g. the real requirement text
+            columns[role] = max(letters, key=lambda l: (len(values(l)) > 0, avg_len(l)))
+    texts = [l for l in candidates.get("comment", []) if l != columns.get("comment")]
     if "requirement" not in columns:
         text_cols = [l for l in headers if l not in marks]
         if text_cols:
@@ -179,6 +194,7 @@ def guess_sheet(name: str, rows: list[tuple], header_row: int | None = None) -> 
         headers=headers,
         columns=columns,
         answer_columns=answers,
+        text_columns=texts,
         mark_columns=marks,
         legend=legend,
         data_rows=len([r for r in rows[header_idx + 1:] if any(clean(v) for v in r)]),

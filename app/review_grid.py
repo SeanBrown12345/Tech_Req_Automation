@@ -268,8 +268,12 @@ def evidence(r, expanded: int = 0) -> None:
     if not past:
         st.caption("None: no similar past answers were found.")
     for i, e in enumerate(past):
-        with st.expander(f"{similarity_md(e.get('similarity'))} {e['client']} ({e['submitted'] or '?'})",
+        same = " · same question" if e.get("same_question") else ""
+        with st.expander(f"{similarity_md(e.get('similarity'))} {e['client']} ({e['submitted'] or '?'}){same}",
                          expanded=i < expanded):
             status_badge(e["status"])
             st.write(e["requirement"])
             st.caption(e["comment"] or "_No comment_")
+            # What was answered in each answer column (a questionnaire can have several).
+            for name, value in (e.get("answer_raw") or {}).items():
+                st.caption(f"**{name.replace('_', ' ').capitalize()}:** {value}")

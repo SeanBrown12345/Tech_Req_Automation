@@ -52,6 +52,7 @@ class Signal:
     scale: Scale | None = None
     marks: dict[int, str] | None = None  # mark signal: any non-blank cell in column -> status
     refines: set[str] | None = None      # only override when the current status is unset or one of these
+    # Neither: a column kept as written (a second dropdown, another text answer), with no status.
 
 
 @dataclass
@@ -102,6 +103,8 @@ def _parse_signals(specs: list[dict], scales: dict[str, Scale], where: str) -> l
                     raise ValueError(f"{where}: mark column {letter} uses unknown status {status!r}")
                 marks[col_index(letter)] = status
             signals.append(Signal(name, marks=marks, refines=refines))
+        elif "column" in spec and spec.get("as_written"):
+            signals.append(Signal(name, column=col_index(spec["column"])))
         elif "column" in spec:
             if "values" in spec:  # scale defined inline (profiles created in the dashboard)
                 scale = _parse_scale(f"{where}:{name}", {"values": spec["values"]}, where)
@@ -111,7 +114,8 @@ def _parse_signals(specs: list[dict], scales: dict[str, Scale], where: str) -> l
                 raise ValueError(f"{where}: unknown scale {spec.get('scale')!r}")
             signals.append(Signal(name, column=col_index(spec["column"]), scale=scale, refines=refines))
         else:
-            raise ValueError(f"{where}: answer entry needs 'column' + 'scale'/'values', or 'marks': {spec}")
+            raise ValueError(f"{where}: answer entry needs 'column' + 'scale'/'values'/'as_written', "
+                             f"or 'marks': {spec}")
     return signals
 
 

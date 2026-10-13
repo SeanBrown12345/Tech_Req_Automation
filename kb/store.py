@@ -7,6 +7,7 @@ cached by (model, text hash), so re-ingesting unchanged rows doesn't re-embed th
 
 import hashlib
 import json
+import re
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,10 @@ from kb.profile import Profile
 # Bump when the schema changes. The store is derived data, so an old database is rebuilt
 # (re-run `python -m kb ingest`) rather than migrated.
 SCHEMA_VERSION = 2
+
+# A past answer with the same question ID (CAIQ "A&A-01.1", SIG, HECVAT...) is the same question when
+# its text is this close too; functional worksheets reuse IDs like "1.1" for unrelated requirements.
+ID_MATCH_SIM = 0.85
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (
@@ -361,6 +366,10 @@ def search(conn, query: str, limit: int = 10, status: str | None = None,
     return results
 
 
+def _norm_id(req_id: str) -> str:
+    return re.sub(r"\s+", "", str(req_id)).lower()
+
+
 class Retriever:
     """Hybrid search for many queries at once (the drafter's workload).
 
@@ -371,12 +380,30 @@ class Retriever:
     def __init__(self, conn, embedder: Embedder, filters: dict | None = None, candidates: int = 50):
         self.conn, self.embedder, self.filters, self.candidates = conn, embedder, filters, candidates
         self.ids, self.matrix = _vector_matrix(conn, embedder.model_name, filters)
+        self.position = {rid: i for i, rid in enumerate(self.ids)}
+        self._by_req_id: dict[str, list[str]] | None = None
 
-    def search_many(self, queries: list[str], limit: int = 6) -> list[list[dict]]:
+    def _same_id(self, req_id: str | None) -> list[str]:
+        """Past records with this question ID, within the filters."""
+        if not req_id:
+            return []
+        if self._by_req_id is None:
+            where, params = _filter_sql(self.filters)
+            self._by_req_id = {}
+            for rid, rid_req in self.conn.execute(
+                    "SELECT r.record_id, r.req_id FROM records r JOIN sources s USING (source_id)"
+                    f" WHERE r.req_id IS NOT NULL{where}", params):
+                self._by_req_id.setdefault(_norm_id(rid_req), []).append(rid)
+        return self._by_req_id.get(_norm_id(req_id), [])
+
+    def search_many(self, queries: list[str], limit: int = 6,
+                    req_ids: list[str | None] | None = None) -> list[list[dict]]:
+        """Past records for each query. With `req_ids`, a past answer to the same question (same ID and
+        near-identical text) comes first, found by "id"."""
         if not queries:
             return []
         vectors = self.embedder.embed(queries) if len(self.ids) else None
-        ranked: list[tuple[list[str], dict[str, float], list[str]]] = []
+        ranked: list[tuple[list[str], dict[str, float], list[str], set[str]]] = []
         for i, query in enumerate(queries):
             keyword = _keyword_ids(self.conn, query, self.candidates, self.filters)
             semantic, sims = [], {}
@@ -385,13 +412,22 @@ class Retriever:
                 top = np.argsort(-scores)[:self.candidates]
                 semantic = [self.ids[j] for j in top]
                 sims = {self.ids[j]: float(scores[j]) for j in top}
+            same = []
+            if vectors is not None and req_ids:
+                for rid in self._same_id(req_ids[i]):
+                    if rid in self.position:
+                        sims[rid] = sim = float(self.matrix[self.position[rid]] @ vectors[i])
+                        if sim >= ID_MATCH_SIM:
+                            same.append(rid)
+                same.sort(key=sims.get, reverse=True)
             fused: dict[str, float] = {}
             for ids in (keyword, semantic):
                 for rank, record_id in enumerate(ids):
                     fused[record_id] = fused.get(record_id, 0.0) + 1.0 / (60 + rank)
-            ranked.append((sorted(fused, key=fused.get, reverse=True)[:limit], sims, keyword))
+            rest = [rid for rid in sorted(fused, key=fused.get, reverse=True) if rid not in same]
+            ranked.append(([*same, *rest][:limit], sims, keyword, set(same)))
 
-        wanted = {rid for ids, _, _ in ranked for rid in ids}
+        wanted = {rid for ids, *_ in ranked for rid in ids}
         details = {}
         wanted_list = list(wanted)
         for start in range(0, len(wanted_list), 900):  # stay under SQLite's variable limit
@@ -401,12 +437,13 @@ class Retriever:
                     f" WHERE r.record_id IN ({','.join('?' * len(chunk))})", chunk):
                 details[r["record_id"]] = dict(r)
         out = []
-        for ids, sims, keyword in ranked:
+        for ids, sims, keyword, same in ranked:
             results = []
             for rid in ids:
                 row = dict(details[rid])
                 row["similarity"] = sims.get(rid)
-                row["found_by"] = [n for n, hit in (("keyword", rid in keyword), ("semantic", rid in sims)) if hit]
+                row["found_by"] = [n for n, hit in (("id", rid in same), ("keyword", rid in keyword),
+                                                    ("semantic", rid in sims and rid not in same)) if hit]
                 results.append(row)
             out.append(results)
         return out

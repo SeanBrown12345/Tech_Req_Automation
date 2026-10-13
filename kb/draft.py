@@ -126,7 +126,7 @@ def guess_plan(data: bytes, sheets: dict[str, list[tuple]] | None = None,
             if options:
                 fields.append({"key": letter, "kind": "choice", "columns": [letter], "label": head,
                                "options": options, "guidance": "", "include": True})
-            elif is_comment or hint or letter in guess.answer_columns:
+            elif is_comment or hint or letter in guess.answer_columns or letter in guess.text_columns:
                 fields.append({"key": letter, "kind": "text", "columns": [letter], "label": head,
                                "guidance": hint if hint and hint.lower() != "free form" else "",
                                "include": True})
@@ -391,8 +391,9 @@ Rules:
 2. When past answers disagree, prefer the most recent one, and lower your confidence.
 3. When no evidence covers the requirement, give the most cautious defensible answer and set confidence to "low".
 4. Follow the worksheet instructions below exactly - for example, include release numbers and dates, cost estimates, or explanations wherever the instructions require them. If required information (a release number, a date, an hour estimate, a price) is not in the evidence, write a clear placeholder in square brackets, e.g. [Release # and date to be confirmed], and never invent it.
-5. Comments and narratives: professional, concise, in our voice and consistent with the wording of our past comments. Never mention "evidence", other clients, or previous RFPs. Leave a comment field "" when the instructions don't call for one and a comment adds nothing. When none of the closest past answers (similarity {SIM_SAME} or higher) has a comment, leave the comment "" unless the worksheet instructions require one for the response you chose (for example a release number and date, or a modification estimate). If any of them has a comment, keep using it as the model for ours. Prefer not to write a comment that only restates the requirement; a comment should add a fact the requirement doesn't already contain.
+5. Comments and narratives: professional, concise, in our voice and consistent with the wording of our past comments. Never mention "evidence", other clients, or previous RFPs. Past answers often name the client they were written for (each one shows that client): replace that name with this worksheet's client, or with neutral wording such as "the customer" when it isn't specified. Leave a comment field "" when the instructions don't call for one and a comment adds nothing. When none of the closest past answers (similarity {SIM_SAME} or higher) has a comment, leave the comment "" unless the worksheet instructions require one for the response you chose (for example a release number and date, or a modification estimate). If any of them has a comment, keep using it as the model for ours. Prefer not to write a comment that only restates the requirement; a comment should add a fact the requirement doesn't already contain.
 6. Fill only the fields listed in each row's "fill"; return "" for every other field.
+6a. Evidence marked SAME QUESTION is our previous answer to this exact question of a standard questionnaire (same question ID and wording). Reuse its answers field for field - choices, other answers as written, and comment - changing only client names and anything outdated; when several disagree, follow the most recent.
 7. "status" is our internal classification of the answer:
 {statuses}
 8. "confidence": high = closely matching evidence answers this directly and consistently; medium = related evidence that needs inference or has minor gaps; low = little or no relevant evidence, conflicting evidence, or any placeholder in your answer.
@@ -444,6 +445,8 @@ def _evidence_brief(row_num: int, evidence: list[dict]) -> tuple[str, list[dict]
         attrs = json.loads(e["attributes"]) if isinstance(e["attributes"], str) else e["attributes"]
         req = f"{e['parent_text']} {e['requirement']}" if e.get("parent_text") else e["requirement"]
         sim = f"similarity {e['similarity']:.2f}, " if e.get("similarity") is not None else ""
+        if "id" in e.get("found_by", ()):
+            sim = f"SAME QUESTION, ID {e['req_id']}, " + sim
         lines.append(f"  [{eid}] ({sim}{e['client']}, {e['submitted'] or 'date unknown'}) status {e['status']}; "
                      f"answered {json.dumps(raw, ensure_ascii=False)}\n"
                      f"     requirement: {req}\n"
@@ -451,7 +454,7 @@ def _evidence_brief(row_num: int, evidence: list[dict]) -> tuple[str, list[dict]
                      + (f"\n     other details: {json.dumps(attrs, ensure_ascii=False)}" if attrs else ""))
         kept.append({"id": eid, "record_id": e["record_id"], "client": e["client"], "submitted": e["submitted"],
                      "status": e["status"], "similarity": e.get("similarity"), "requirement": req,
-                     "comment": e["comment"], "answer_raw": raw})
+                     "comment": e["comment"], "answer_raw": raw, "same_question": "id" in e.get("found_by", ())})
     return "\n".join(lines) or "  (no similar past answers found)", kept
 
 
@@ -594,7 +597,7 @@ def _run_job(job_id: str, exclude_sources: list[str] | None) -> None:
         retriever = store.Retriever(kb_conn, Embedder(), {"exclude_sources": exclude_sources or plan.get(
             "exclude_sources") or []})
         queries = [embedding_text(r["requirement"], r["parent_text"]) for r in pending]
-        found = retriever.search_many(queries, EVIDENCE_PER_ROW)
+        found = retriever.search_many(queries, EVIDENCE_PER_ROW, req_ids=[r["req_id"] for r in pending])
         evidence = {(r["sheet"], r["row_num"]): ev for r, ev in zip(pending, found)}
         products = _products(kb_conn)
         kb_conn.close()

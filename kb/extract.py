@@ -76,6 +76,8 @@ def _evaluate(sheet: SheetProfile, row: tuple, header: tuple, report: SheetRepor
             if value is None:
                 continue
             raw[signal.name] = value
+            if signal.scale is None:  # kept as written
+                continue
             known, mapped = signal.scale.lookup(value)
             if not known:
                 report.unknown_values[(signal.name, value)] += 1

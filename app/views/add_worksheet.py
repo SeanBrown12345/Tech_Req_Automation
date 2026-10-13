@@ -15,6 +15,7 @@ from kb import settings, store
 from kb.detect import distinct_values, guess_sheet, guess_status, read_rows
 from kb.extract import clean, extract_profile
 from kb.profile import load_scales, parse_profile
+from kb.xlsx_patch import dropdowns
 
 NO_INFO = "— no information —"
 LABEL_TO_STATUS = {label: code for code, label in STATUS_LABELS.items()}
@@ -34,15 +35,18 @@ def slug(text: str) -> str:
 
 @st.cache_data(show_spinner="Reading workbook...", max_entries=5)
 def analyze(data: bytes) -> dict:
+    """Per sheet: its rows, the layout guess, and the columns with a dropdown (a second dropdown beside
+    the main answer, like CAIQ's control ownership, is an answer too)."""
     wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     try:
-        sheets = {}
-        for ws in wb.worksheets:
-            rows = read_rows(ws)
-            sheets[ws.title] = (rows, guess_sheet(ws.title, rows))
-        return sheets
+        values = {ws.title: read_rows(ws) for ws in wb.worksheets}
     finally:
         wb.close()
+    lists = dropdowns(data, values)
+    return {name: (rows, guess_sheet(name, rows),
+                   {get_column_letter(c) for d in lists.get(name, []) if d.options
+                    for c1, _, c2, _ in d.ranges if c2 - c1 < 5 for c in range(c1, c2 + 1)})
+            for name, rows in values.items()}
 
 
 def repo_source_ids() -> set[str]:
@@ -54,7 +58,7 @@ def data_profiles() -> list[Path]:
     return sorted(settings.DATA_PROFILES_DIR.glob("*.yaml"), key=lambda p: p.stat().st_mtime, reverse=True)
 
 
-def sheet_editor(fhash: str, name: str, rows: list[tuple], guess) -> dict | None:
+def sheet_editor(fhash: str, name: str, rows: list[tuple], guess, dropdown_cols: set[str]) -> dict | None:
     """Widgets for one sheet. Returns its profile spec, or None if excluded/incomplete."""
     k = f"{fhash}:{name}"
     include = st.toggle("Load this sheet", value=bool(guess.answer_columns or guess.mark_columns), key=f"{k}:inc")
@@ -132,7 +136,18 @@ def sheet_editor(fhash: str, name: str, rows: list[tuple], guess) -> dict | None
             spec["refines"] = ["SUPPORTED", "STANDARD"]
         signals.append(spec)
 
-    leftover = [l for l in choices if l not in used | set(marks) | set(answers)]
+    # Further answers we wrote, stored as written: more text (CAIQ's customer responsibilities) or another
+    # dropdown (CAIQ's control ownership). The drafter sees them and fills the same columns next time.
+    taken = used | set(marks) | set(answers)
+    others = [l for l in choices if l not in taken]
+    written = st.multiselect(
+        "Other answers we wrote (kept as written, no status)", others, format_func=fmt,
+        default=[l for l in others if l in guess.text_columns or (l in dropdown_cols and l not in guess.columns.values())],
+        key=f"{k}:written:{header_row}")
+    for letter in written:
+        signals.append({"name": slug(headers[letter]) or f"col_{letter}", "column": letter, "as_written": True})
+
+    leftover = [l for l in others if l not in written]
     keep = st.multiselect("Other columns to keep as details", leftover, format_func=fmt, key=f"{k}:attrs:{header_row}")
 
     spec = {"name": name, "header_row": int(header_row), "columns": columns, "answer": signals}
@@ -189,9 +204,9 @@ if uploaded:
         st.stop()
 
     specs = []
-    for tab, (name, (rows, guess)) in zip(st.tabs(list(found)), found.items()):
+    for tab, (name, (rows, guess, dropdown_cols)) in zip(st.tabs(list(found)), found.items()):
         with tab:
-            spec = sheet_editor(fhash, name, rows, guess)
+            spec = sheet_editor(fhash, name, rows, guess, dropdown_cols)
             if spec:
                 specs.append(spec)
 
@@ -222,6 +237,7 @@ if uploaded:
             except Exception as exc:
                 st.error(f"Couldn't read the worksheet with these settings: {exc}")
                 st.stop()
+        as_written = {s["name"] for spec in specs for s in spec["answer"] if s.get("as_written")}
         for rep in reports:
             with st.container(border=True):
                 st.markdown(f"**{rep.sheet}** — {rep.records:,} requirements, {rep.skipped_unanswered} unanswered rows skipped")
@@ -232,7 +248,9 @@ if uploaded:
                     st.warning(f"{rep.multi_marked} rows have more than one column marked; the first is used.")
         st.dataframe(pd.DataFrame([{
             "Sheet": r.sheet, "Row": r.row_num, "ID": r.req_id, "Under": r.parent_text, "Requirement": r.requirement,
-            "Status": status_label(r.status), "Comment": r.comment} for r in records[:300]]),
+            "Status": status_label(r.status), "Comment": r.comment,
+            "Other answers": " · ".join(f"{k}: {v}" for k, v in r.answer_raw.items() if k in as_written) or None}
+            for r in records[:300]]),
             hide_index=True, width="stretch")
         if len(records) > 300:
             st.caption(f"Showing the first 300 of {len(records):,}.")
