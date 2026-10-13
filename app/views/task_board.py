@@ -217,18 +217,22 @@ def partner_view(mine: pd.DataFrame, person: str) -> None:
         pc, c = _partner_counts(job_rows), _counts(job_rows)
         unsent = c["rows"] - pc["sent"]
         with st.container(border=True):
-            title, out = st.columns([3, 1], vertical_alignment="center")
+            title, actions = st.columns([3, 2], vertical_alignment="center")
             title.markdown(f"#### {job_rows.draft.iloc[0]}")
-            last = max((t[:10] for t in job_rows.sent_at if isinstance(t, str)), default="")
-            title.caption((f"Last sent {last}" if last else "Not sent yet")
-                          + (f" · **{unsent:,} rows not sent yet**" if last and unsent else ""))
-            out.download_button(
-                "Export worksheet", lambda j=job_id: draft.build_partner_export(j, person),
-                file_name=f"{Path(job_rows.filename.iloc[0]).stem} - {person}.xlsx", icon=":material/outgoing_mail:",
-                width="stretch", type="primary" if unsent else "secondary", key=f"export:{job_id}:{person}",
-                on_click=draft.mark_sent, args=(job_id, person),
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                help="Their rows filled with our drafts, every other row hidden. Marks the rows as sent.")
+            with actions.container(horizontal=True, horizontal_alignment="right"):
+                # Reviewing what they sent back: one button per sheet they have rows on, beside the export.
+                multi = job_rows.sheet.nunique() > 1
+                for sheet, view in job_rows.groupby("sheet", sort=False):
+                    st.button(("Review answers" if _counts(view)["left"] else "Review again")
+                              + (f" · {sheet}" if multi else ""), key=f"start:{job_id}:{sheet}",
+                              icon=":material/play_arrow:", on_click=_start_review, args=(person, job_id, sheet, view))
+                st.download_button(
+                    "Export worksheet", lambda j=job_id: draft.build_partner_export(j, person),
+                    file_name=f"{Path(job_rows.filename.iloc[0]).stem} - {person}.xlsx",
+                    icon=":material/outgoing_mail:", type="primary" if unsent else "secondary",
+                    key=f"export:{job_id}:{person}", on_click=draft.mark_sent, args=(job_id, person),
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    help="Their rows filled with our drafts, every other row hidden. Marks the rows as sent.")
             m = st.columns(4)
             m[0].metric("Rows", f"{c['rows']:,}")
             m[1].metric("Sent", f"{pc['sent']:,}")
@@ -242,17 +246,6 @@ def partner_view(mine: pd.DataFrame, person: str) -> None:
                              key=f"approve-all:{job_id}:{person}",
                              help="Approve every answer they sent back that isn't approved yet"):
                     _confirm_approve_all(job_id, person, pc["to_approve"], job_rows.draft.iloc[0])
-            for sheet, view in job_rows.groupby("sheet", sort=False):
-                sheet_plan, multi = _sheet_plan(view, sheet)
-                sc = _counts(view)
-                label = "Review answers" + (f" · {sheet}" if multi else "") if sc["left"] else "Review again"
-                st.button(label, key=f"start:{job_id}:{sheet}", icon=":material/play_arrow:", type="secondary",
-                          on_click=_start_review, args=(person, job_id, sheet, view))
-                with st.expander("Browse the rows" + (f" · {sheet}" if multi else "")):
-                    review_grid.grid(job_id, sheet_plan, view.drop(columns=["who", "draft"]),
-                                     key=f"board:{person}:{job_id}:{sheet}")
-                    st.markdown("**Answer details**")
-                    review_grid.details(view, key=f"board:{person}:{job_id}:{sheet}")
 
 
 # =================================================================================================
@@ -472,8 +465,13 @@ def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str, mode: 
 # Table review
 # =================================================================================================
 # The Fullscreen button above the table opens the table's own fullscreen view, by clicking the matching
-# button in the table's toolbar.
-_FULLSCREEN = """<script>
+# button in the table's toolbar. The table keeps its fixed page height in fullscreen unless stretched to fill it.
+_FULLSCREEN = """<style>
+[class*="st-key-gridbox-"]:has(button[aria-label="Close fullscreen"]) [data-testid="stDataFrameResizable"] {
+    height: 100% !important; max-height: none !important;
+}
+</style>
+<script>
 if (!window.reqfillTableFullscreen) {
     window.reqfillTableFullscreen = true;
     document.addEventListener("click", e => {

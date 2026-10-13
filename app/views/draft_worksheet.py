@@ -295,7 +295,7 @@ def _job_page(job_id: str):
 </style>""")
         with st.container(border=True, key="draft-download"):
             st.markdown("**Download the filled worksheet**")
-            d1, d2, d3 = st.columns([2, 2, 2], vertical_alignment="center")
+            d1, d2, d3, d4 = st.columns([3, 3, 2, 2], vertical_alignment="center")
             red = d1.toggle("Red: low-confidence answers", value=True, key=f"red:{job_id}",
                             help="Fills the answer cells of low-confidence rows.")
             yellow = d2.toggle("Yellow: needs pricing", value=True, key=f"yellow:{job_id}",
@@ -305,6 +305,13 @@ def _job_page(job_id: str):
                                file_name=f"{Path(job.filename).stem} - DRAFT.xlsx", width="stretch",
                                icon=":material/download:", on_click="ignore",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            pricing = int(done.cost_impact.sum())
+            d4.download_button("Pricing rows", lambda: draft.build_pricing_export(job_id), width="stretch",
+                               file_name=f"{Path(job.filename).stem} - PRICING.xlsx", disabled=not pricing,
+                               icon=":material/request_quote:", on_click="ignore",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               help=f"Only the {pricing:,} rows that need pricing, filled with our drafts; "
+                                    "every other row hidden." if pricing else "No rows need pricing")
 
     # ---- Review grid ----
     with st.container(border=True, key="card-review"):
@@ -388,8 +395,6 @@ def _job_page(job_id: str):
                  else f"{len(targets):,} shown row{'s' * (len(targets) != 1)}")
         actions = st.container(horizontal=True, vertical_alignment="center")
         with actions.popover(f"Assign {which}", icon=":material/person_add:"):
-            st.caption(f"Give the {which} to one person. They'll find them on the **Task board**. "
-                       "Tick rows in the table to pick them; with none ticked, every row shown is used.")
             # Partners covering every module among these rows are suggested first.
             covering = draft.partners()
             target_modules = set(view[view.row_num.isin(targets)].module.dropna()) - {modules.GENERAL}
@@ -401,7 +406,6 @@ def _job_page(job_id: str):
             if suggested:
                 st.caption(f"**{', '.join(suggested)}** cover{'s' * (len(suggested) == 1)} "
                            f"{', '.join(sorted(target_modules))}.")
-            st.caption("Someone missing? Add them under **Admin › SMEs** or **Partners** (the gear, top right).")
             a1, a2 = st.columns(2)
             if a1.button("Assign", type="primary", width="stretch", disabled=not name, key=f"assign:{job_id}"):
                 draft.assign(job_id, sheet, targets, name.strip())

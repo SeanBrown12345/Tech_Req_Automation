@@ -886,33 +886,43 @@ def build_output(job_id: str, highlight_low: bool = True, highlight_cost: bool =
 # Partners: a trimmed copy of the client's worksheet goes out by email, their answers come back
 # ================================================================================================
 
-def build_partner_export(job_id: str, partner: str) -> bytes:
-    """The client's workbook as a partner should see it: their rows filled with our drafted answers,
-    every other requirement row hidden, and requirement sheets with none of their rows hidden.
-    Nothing is deleted, so their reply lines up row for row. No highlights, no pricing."""
+def _trimmed_export(job_id: str, where: str, params: tuple) -> bytes:
+    """The client's workbook with only the rows matching `where` filled with our drafted answers, every
+    other requirement row hidden, and requirement sheets with none of those rows hidden. Nothing is
+    deleted, so a reply lines up row for row. No highlights."""
     conn = connect_drafts()
     try:
         plan = json.loads(conn.execute("SELECT plan FROM jobs WHERE job_id = ?", (job_id,)).fetchone()[0])
-        rows = conn.execute("SELECT * FROM rows WHERE job_id = ? AND assignee = ? AND ai IS NOT NULL",
-                            (job_id, partner)).fetchall()
+        rows = conn.execute(f"SELECT * FROM rows WHERE job_id = ? AND ({where}) AND ai IS NOT NULL",
+                            (job_id, *params)).fetchall()
         last_row = {r[0]: r[1] for r in conn.execute(
             "SELECT sheet, MAX(row_num) FROM rows WHERE job_id = ? GROUP BY sheet", (job_id,))}
     finally:
         conn.close()
     fields_by_sheet = {sp["name"]: {f["key"]: f for f in sp["fields"]} for sp in plan["sheets"]}
     values: dict[str, dict[str, str | None]] = {}
-    theirs: dict[str, set[int]] = {}
+    kept: dict[str, set[int]] = {}
     for r in rows:
         values.setdefault(r["sheet"], {}).update(_answer_cells(r, fields_by_sheet[r["sheet"]])[0])
-        theirs.setdefault(r["sheet"], set()).add(r["row_num"])
-    # Hide the requirement rows that aren't theirs: everything between the header and the last requirement
-    # row (title, instructions and header above, and any notes below, stay visible).
-    hidden_rows = {sp["name"]: set(range(sp["header_row"] + 1, last_row[sp["name"]] + 1)) - theirs[sp["name"]]
-                   for sp in plan["sheets"] if sp["name"] in theirs}
+        kept.setdefault(r["sheet"], set()).add(r["row_num"])
+    # Hide the other requirement rows: everything between the header and the last requirement row (title,
+    # instructions and header above, and any notes below, stay visible).
+    hidden_rows = {sp["name"]: set(range(sp["header_row"] + 1, last_row[sp["name"]] + 1)) - kept[sp["name"]]
+                   for sp in plan["sheets"] if sp["name"] in kept}
     hidden_sheets = {sp["name"] for sp in plan["sheets"]
-                     if sp.get("include", True) and sp["name"] in last_row and sp["name"] not in theirs}
+                     if sp.get("include", True) and sp["name"] in last_row and sp["name"] not in kept}
     return patch_workbook(workbook_path(job_id).read_bytes(), values,
                           hidden_rows=hidden_rows, hidden_sheets=hidden_sheets)
+
+
+def build_partner_export(job_id: str, partner: str) -> bytes:
+    """The client's workbook as a partner should see it: only their rows, filled with our drafts."""
+    return _trimmed_export(job_id, "assignee = ?", (partner,))
+
+
+def build_pricing_export(job_id: str) -> bytes:
+    """The client's workbook with only the rows flagged as needing pricing, filled with our drafts."""
+    return _trimmed_export(job_id, "cost_impact", ())
 
 
 def mark_sent(job_id: str, partner: str) -> None:
