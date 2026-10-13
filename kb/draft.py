@@ -52,7 +52,7 @@ AUTO_MODES = {
     "standard_blank": "High confidence and Standard, nothing written",
 }
 AUTO_STATUSES = {"STANDARD", "SUPPORTED"}  # the Standard modes: in the product (Supported = a plain Yes)
-AUTO_OFF = {"enabled": False, "mode": "high", "min_sim": 0.95}
+AUTO_DEFAULT = {"enabled": False, "mode": "standard", "min_sim": 0.95}  # what new drafts start with
 
 
 def _rule(value) -> dict:
@@ -61,8 +61,8 @@ def _rule(value) -> dict:
     if "enabled" not in rule:
         rule["enabled"] = rule.get("mode", "off") != "off"
     if rule.get("mode") not in AUTO_MODES:
-        rule["mode"] = AUTO_OFF["mode"]
-    return AUTO_OFF | rule
+        rule["mode"] = AUTO_DEFAULT["mode"]
+    return AUTO_DEFAULT | rule
 
 
 # ================================================================================================
@@ -368,7 +368,7 @@ def create_job(name: str, client: str | None, filename: str, data: bytes, plan: 
         conn.execute("INSERT INTO jobs (job_id, name, client, filename, created_at, status, plan, total, model,"
                      " auto_approve) VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?)",
                      (job_id, name, client, filename, datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                      json.dumps(plan), len(rows), MODEL, json.dumps(auto_approve or AUTO_OFF)))
+                      json.dumps(plan), len(rows), MODEL, json.dumps(auto_approve or AUTO_DEFAULT)))
         conn.executemany(
             "INSERT INTO rows (job_id, sheet, row_num, req_id, requirement, parent_text, context, fill, prefilled)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -710,24 +710,6 @@ def save_review(job_id: str, sheet: str, row_num: int, final: dict | None = None
 # ================================================================================================
 # Auto-approve
 # ================================================================================================
-
-def auto_approve_default() -> dict:
-    """The rule new drafts start with."""
-    conn = connect_drafts()
-    try:
-        row = conn.execute("SELECT value FROM app_settings WHERE key = 'auto_approve'").fetchone()
-        return _rule(row[0] if row else None)
-    finally:
-        conn.close()
-
-
-def set_auto_approve_default(rule: dict) -> None:
-    conn = connect_drafts()
-    with conn:
-        conn.execute("INSERT INTO app_settings (key, value) VALUES ('auto_approve', ?)"
-                     " ON CONFLICT (key) DO UPDATE SET value = excluded.value", (json.dumps(rule),))
-    conn.close()
-
 
 def auto_approve_rule(job) -> dict:
     """A job's rule; drafts from before auto-approve existed are off."""

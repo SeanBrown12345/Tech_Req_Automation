@@ -51,6 +51,12 @@ def show_rows(view: pd.DataFrame, show: str) -> pd.DataFrame:
     return view
 
 
+def auto_only(view: pd.DataFrame) -> pd.Series:
+    """Rows the auto-approve rule approved that no SME has: they count as handled by the rule, not as
+    unassigned."""
+    return view.assignee.isna() & (view.approved_by == "auto")
+
+
 def with_sections(view: pd.DataFrame) -> pd.DataFrame:
     """Add a `section` column: the coarsest heading level that varies in these rows (worksheets use
     different ones)."""

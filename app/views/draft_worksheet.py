@@ -61,18 +61,13 @@ def _auto_approve(rule: dict, key: str, job_id: str | None = None) -> dict:
                         format="%d%% similar", key=f"{key}:sim",
                         help="High confidence already needs 85%. 95% means the past requirement is all but identical.")
         picked = {"enabled": enabled, "mode": mode, "min_sim": sim / 100}
-        if job_id:
-            a1, a2 = st.columns(2)
-            if a1.button("Apply", type="primary", width="stretch", disabled=picked == rule, key=f"{key}:apply"):
-                n = draft.set_auto_approve(job_id, picked)
-                st.session_state.auto_note = (f"Auto-approve now covers {n:,} rows." if enabled
-                                              else "Saved; tick Auto-approve to use it.")
-                review_grid.refresh()
-                st.rerun()
-            if a2.button("Make default", width="stretch", disabled=picked == draft.auto_approve_default(),
-                         key=f"{key}:default", help="New drafts start with this setting"):
-                draft.set_auto_approve_default(picked)
-                st.toast("New drafts will start with this auto-approve setting.")
+        if job_id and st.button("Apply", type="primary", width="stretch", disabled=picked == rule,
+                                key=f"{key}:apply"):
+            n = draft.set_auto_approve(job_id, picked)
+            st.session_state.auto_note = (f"Auto-approve now covers {n:,} rows." if enabled
+                                          else "Saved; tick Auto-approve to use it.")
+            review_grid.refresh()
+            st.rerun()
     return picked
 
 
@@ -263,7 +258,7 @@ def new_draft():
         "What the client's workbook says about how to respond (edit freely - the AI follows this)",
         value=plan["instructions"], height=220, key=k("instructions"))
 
-    auto = _auto_approve(draft.auto_approve_default(), k("auto"))
+    auto = _auto_approve(draft.AUTO_DEFAULT, k("auto"))
 
     rows = draft.collect_rows(plan, _read(data))
     no_options =[f"{sp['name']} column {f['columns'][0]}" for sp in plan["sheets"] if sp["include"]
@@ -372,15 +367,18 @@ def _job_page(job_id: str):
         # Progress across the whole draft (every sheet), before the filters narrow the grid.
         approved = int(done.reviewed.sum())
         auto_approved = int((done.approved_by == "auto").sum())
-        unassigned = done.assignee.isna()
+        auto_only = review_grid.auto_only(done)
+        unassigned = done.assignee.isna() & ~auto_only
         r = st.columns(4)
         r[0].metric("Approved", f"{approved:,}", help=f"Rows an SME has approved, plus {auto_approved:,} approved "
                                                        "automatically (Show › Auto-approved lists them)")
         r[1].metric("Needs Review", f"{len(done) - approved:,}", help="Rows still waiting for review")
-        r[2].metric("Unassigned", f"{int((unassigned & done.returned_by.isna()).sum()):,}",
-                    help="Never assigned to an SME")
-        r[3].metric("Unassigned by an SME", f"{int((unassigned & done.returned_by.notna()).sum()):,}",
-                    help="Sent back by an SME as out of their area, waiting to be reassigned")
+        r[2].metric("Auto-approved", f"{int(auto_only.sum()):,}",
+                    help="Approved by the auto-approve rule with no SME assigned; Assigned to › Auto-approved "
+                         "lists them")
+        r[3].metric("Unassigned", f"{int(unassigned.sum()):,}",
+                    help="Rows no SME has and the rule didn't approve: never assigned, or sent back by an SME as "
+                         "out of their area (Assigned to › Unassigned by an SME lists those)")
         with st.container(key="auto-approve"):
             _auto_approve(draft.auto_approve_rule(job), f"auto:{job_id}", job_id)
         if note := st.session_state.pop("auto_note", None):
@@ -426,18 +424,24 @@ def _job_page(job_id: str):
         section = review_grid.section_select(g1, view, key=f"section:{job_id}:{sheet}")
         module = review_grid.module_select(gm, view, key=f"module:{job_id}:{sheet}",
                                            counted=review_grid.in_section(review_grid.show_rows(view, show), section))
-        UNASSIGNED, RETURNED = "Never assigned", "Unassigned by an SME"
-        n_returned = int((view.assignee.isna() & view.returned_by.notna()).sum())
-        who = g2.selectbox("Assigned to", ["Anyone", UNASSIGNED, RETURNED, *draft.people()], key=f"who:{job_id}",
-                           format_func=lambda o: f"{o} ({n_returned})" if o == RETURNED else o,
+        UNASSIGNED, RETURNED, AUTO = "Never assigned", "Unassigned by an SME", "Auto-approved"
+        auto_only = review_grid.auto_only(view)
+        n_returned = int((view.assignee.isna() & view.returned_by.notna() & ~auto_only).sum())
+        n_auto = int(auto_only.sum())
+        who = g2.selectbox("Assigned to", ["Anyone", UNASSIGNED, RETURNED, AUTO, *draft.people()], key=f"who:{job_id}",
+                           format_func=lambda o: f"{o} ({n_returned})" if o == RETURNED
+                           else f"{o} ({n_auto})" if o == AUTO else o,
                            help="**Unassigned by an SME**: rows an SME sent back as out of their area, waiting to be "
-                                "reassigned. Kept apart from rows never assigned.")
+                                "reassigned. Kept apart from rows never assigned. **Auto-approved**: rows the "
+                                "auto-approve rule approved that no SME has.")
 
         view = review_grid.section_and_module(review_grid.show_rows(view, show), section, module)
         if who == UNASSIGNED:
-            view = view[view.assignee.isna() & view.returned_by.isna()]
+            view = view[view.assignee.isna() & view.returned_by.isna() & ~review_grid.auto_only(view)]
         elif who == RETURNED:
-            view = view[view.assignee.isna() & view.returned_by.notna()]
+            view = view[view.assignee.isna() & view.returned_by.notna() & ~review_grid.auto_only(view)]
+        elif who == AUTO:
+            view = view[review_grid.auto_only(view)]
         elif who != "Anyone":
             view = view[view.assignee == who]
         if text:

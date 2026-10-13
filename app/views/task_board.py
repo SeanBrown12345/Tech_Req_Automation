@@ -119,7 +119,7 @@ def people_list(rows: pd.DataFrame) -> None:
     if not theirs.empty:
         st.subheader("Partners")
         _cards(theirs, partner=True)
-    if unassigned := int((rows.who.isna() & rows.returned_by.isna()).sum()):
+    if unassigned := int((rows.who.isna() & rows.returned_by.isna() & (rows.approved_by != "auto")).sum()):
         st.caption(f"{unassigned:,} drafted rows aren't assigned to anyone yet.")
 
 
@@ -466,9 +466,21 @@ def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str, mode: 
 # =================================================================================================
 # The Fullscreen button above the table opens the table's own fullscreen view, by clicking the matching
 # button in the table's toolbar. The table keeps its fixed page height in fullscreen unless stretched to fill it.
+# While fullscreen, the bar above the table (Wrap text, Reassign) is pinned top left, level with the toolbar,
+# without its Fullscreen button; the Reassign dropdown and its pickers open above the fullscreen view.
 _FULLSCREEN = """<style>
 [class*="st-key-gridbox-"]:has(button[aria-label="Close fullscreen"]) [data-testid="stDataFrameResizable"] {
     height: 100% !important; max-height: none !important;
+}
+body:has([class*="st-key-gridbox-"] button[aria-label="Close fullscreen"]) .st-key-table-bar {
+    position: fixed; top: 6px; left: 1rem; z-index: 1000051; width: auto;
+}
+body:has([class*="st-key-gridbox-"] button[aria-label="Close fullscreen"]) .st-key-table-fullscreen { display: none; }
+body:has([class*="st-key-gridbox-"] button[aria-label="Close fullscreen"]) .st-key-table-bar [data-testid="stPopover"] button {
+    border-color: transparent !important;  /* its border would run into the table's top edge */
+}
+body:has([class*="st-key-gridbox-"] button[aria-label="Close fullscreen"]) [data-baseweb="popover"] {
+    z-index: 1000052 !important;
 }
 </style>
 <script>
@@ -515,8 +527,8 @@ def _table_review(person: str, job_id: str, sheet: str, view: pd.DataFrame, shee
         st.caption("No rows match.")
         return
     # Above the table: Wrap text and reassigning ticked rows on the left, Fullscreen on the right (all but
-    # Wrap text drawn after the table, which says what's ticked).
-    bar = st.container(horizontal=True, vertical_alignment="center", gap="large")
+    # Wrap text drawn after the table, which says what's ticked). In fullscreen the bar stays (see _FULLSCREEN).
+    bar = st.container(horizontal=True, vertical_alignment="center", gap="large", key="table-bar")
     wrap = bar.toggle("Wrap text", key=f"{key}:wrap", help="Taller rows that show the whole requirement and answers")
     ticked = review_grid.grid(job_id, sheet_plan, shown, key=f"{key}:{show}:{section}:{module}", height=640,
                               reviewer=True, selectable=True, wrap=wrap)
