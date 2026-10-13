@@ -424,7 +424,8 @@ def _job_page(job_id: str):
         view = review_grid.with_sections(view)
         g1, gm, g2 = st.columns([3, 2, 2], vertical_alignment="bottom")
         section = review_grid.section_select(g1, view, key=f"section:{job_id}:{sheet}")
-        module = review_grid.module_select(gm, view, key=f"module:{job_id}:{sheet}")
+        module = review_grid.module_select(gm, view, key=f"module:{job_id}:{sheet}",
+                                           counted=review_grid.in_section(review_grid.show_rows(view, show), section))
         UNASSIGNED, RETURNED = "Never assigned", "Unassigned by an SME"
         n_returned = int((view.assignee.isna() & view.returned_by.notna()).sum())
         who = g2.selectbox("Assigned to", ["Anyone", UNASSIGNED, RETURNED, *draft.people()], key=f"who:{job_id}",

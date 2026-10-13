@@ -32,7 +32,7 @@ def set_selection(key: str, all_rows: bool) -> None:
 
 
 # ---- Filters shared by the draft page and the task board ----------------------------------------
-SHOW = ["All", "Low confidence", "Needs pricing", "Approved", "Auto-approved", "Needs Review"]
+SHOW = ["All", "Needs Review", "Low confidence", "Needs pricing", "Approved", "Auto-approved"]
 ALL_SECTIONS, ALL_MODULES, NO_MODULE = "All sections", "All modules", "Not detected yet"
 
 
@@ -66,20 +66,28 @@ def section_select(col, view: pd.DataFrame, key: str) -> str:
     return col.selectbox("Section", [ALL_SECTIONS, *sections], key=key, disabled=not sections)
 
 
-def module_select(col, view: pd.DataFrame, key: str) -> str:
-    """Module picker with row counts; NO_MODULE picks rows modules weren't detected for."""
+def module_select(col, view: pd.DataFrame, key: str, counted: pd.DataFrame | None = None) -> str:
+    """Module picker with row counts; NO_MODULE picks rows modules weren't detected for. The options come
+    from `view`, the counts from `counted` (the rows the other filters leave), so the list stays put while
+    the totals follow Show and Section."""
     module_names = modules.names() if modules.load() else []
-    counts = view.module.value_counts()
-    options = [ALL_MODULES, *[m for m in module_names if m in counts], *([NO_MODULE] if view.module.isna().any() else [])]
+    present = set(view.module.dropna())
+    counted = view if counted is None else counted
+    counts = counted.module.value_counts()
+    options = [ALL_MODULES, *[m for m in module_names if m in present], *([NO_MODULE] if view.module.isna().any() else [])]
     return col.selectbox("Module", options, key=key, disabled=not module_names,
-                         format_func=lambda o: f"{o} ({int(counts.get(o, 0)):,})" if o in counts else o,
+                         format_func=lambda o: o if o == ALL_MODULES else
+                         f"{o} ({int(counted.module.isna().sum() if o == NO_MODULE else counts.get(o, 0)):,})",
                          help="The product module each requirement belongs to; set by **Detect modules**, "
                               "or change it in the grid's Module column. The list is in **Admin › Modules**.")
 
 
+def in_section(view: pd.DataFrame, section: str) -> pd.DataFrame:
+    return view if section == ALL_SECTIONS else view[view.section == section]
+
+
 def section_and_module(view: pd.DataFrame, section: str, module: str) -> pd.DataFrame:
-    if section != ALL_SECTIONS:
-        view = view[view.section == section]
+    view = in_section(view, section)
     if module == NO_MODULE:
         return view[view.module.isna()]
     if module != ALL_MODULES:

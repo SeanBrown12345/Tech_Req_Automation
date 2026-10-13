@@ -508,7 +508,8 @@ def _table_review(person: str, job_id: str, sheet: str, view: pd.DataFrame, shee
     f1, f2, f3 = st.columns([2, 3, 2])
     show = f1.selectbox("Show", review_grid.SHOW, key=f"{key}:show")
     section = review_grid.section_select(f2, rows, key=f"{key}:section")
-    module = review_grid.module_select(f3, rows, key=f"{key}:module")
+    module = review_grid.module_select(f3, rows, key=f"{key}:module",
+                                       counted=review_grid.in_section(review_grid.show_rows(rows, show), section))
     shown = review_grid.section_and_module(review_grid.show_rows(rows, show), section, module)
     if shown.empty:
         st.caption("No rows match.")
