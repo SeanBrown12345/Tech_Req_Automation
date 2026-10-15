@@ -11,6 +11,7 @@ from app.common import status_badge, status_label
 from kb import draft, modules
 
 CONF_LABELS = {"high": "High", "medium": "Medium", "low": "Low"}
+RULE = "Needs comment"  # the grid's ⚠️ column
 
 
 def name_or_none(value) -> str | None:
@@ -158,7 +159,8 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
     module_names = modules.names() if modules.load() else []
     fields = [f for f in sheet_plan["fields"] if f.get("include", True)]
     answers = [json.loads(f if isinstance(f, str) else a) for f, a in zip(view.final, view.ai)]  # edits, else AI
-    # Responses the worksheet wants a comment with (see draft.required_comment): a column says what's missing.
+    # Responses the worksheet wants a comment with (see draft.required_comment): a narrow last column marks
+    # every such row, and its header's tooltip says what each response's comment must include.
     rules = draft.comment_field(sheet_plan) is not None and any(f.get("requires") for f in fields)
     frame = pd.DataFrame({
         **({"Select": [st.session_state.get(f"select_all:{key}", False)] * len(view)} if selectable else {}),
@@ -169,22 +171,22 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
         **({"Module": [name_or_none(m) for m in view.module]} if module_names else {}),
         **{f["label"]: [a.get(f["key"], "") if f["key"] in json.loads(fl) else None
                         for a, fl in zip(answers, view.fill)] for f in fields},
-        **({"Comment needed": [draft.missing_comment(sheet_plan, a, json.loads(fl)) or ""
-                               for a, fl in zip(answers, view.fill)]} if rules else {}),
         "Confidence": view.confidence.map(CONF_LABELS).values,
         "Cost": view.cost_impact.astype(bool).values,
         "Status": view.status.map(status_label).values,
         "Assigned to": [name_or_none(a) for a in view.assignee],
         "Approved": view.reviewed.astype(bool).values,
+        **({RULE: [f"⚠️  {note}" if (note := draft.required_comment(sheet_plan, a, json.loads(fl))) else ""
+                   for a, fl in zip(answers, view.fill)]} if rules else {}),
     })
     config = {
         "Select": st.column_config.CheckboxColumn("", width=40, help="Tick rows to assign them or set their module"),
         "Row": st.column_config.NumberColumn(width="small"),
         "Requirement": st.column_config.TextColumn(width="large"),
         "Confidence": st.column_config.TextColumn(width="small"),
-        "Comment needed": st.column_config.TextColumn(
-            width="medium", help="The worksheet requires a comment with this response; the row can't be approved "
-                                 "until it has one"),
+        RULE: st.column_config.TextColumn("⚠️", width=28, help="The worksheet requires a comment with this "
+                                          "response; the row can't be approved without one.\n\n" + "\n\n".join(
+            f"**{o}**: {n}" for f in fields for o, n in (f.get("requires") or {}).items())),
         "Cost": st.column_config.CheckboxColumn("Needs pricing", width="small",
                                                 help="May add implementation cost; highlighted yellow in the download"),
         "Assigned to": st.column_config.SelectboxColumn(
@@ -195,9 +197,7 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
     }
     for f in fields:
         if f["kind"] == "choice":
-            needs = "; ".join(f"**{o}**: {n}" for o, n in (f.get("requires") or {}).items())
-            config[f["label"]] = st.column_config.SelectboxColumn(
-                options=f["options"], help=f"Needs a comment: {needs}" if needs and rules else None)
+            config[f["label"]] = st.column_config.SelectboxColumn(options=f["options"])
         elif f["kind"] == "marks":
             config[f["label"]] = st.column_config.SelectboxColumn(options=[f["labels"][c] for c in f["columns"]])
         else:
@@ -218,9 +218,10 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
                                 height=height or min(760 if wrap else 520, 38 + (row_height + 1) * len(view)),
                                 row_height=row_height if wrap else None,
                                 column_order=[*(["Select"] if selectable else []), "Row", "Requirement",
-                                              *[f["label"] for f in fields], *(["Comment needed"] if rules else []),
-                                              "Confidence", "Cost", "Approved"] if reviewer else None,
-                                disabled=["Row", "Requirement", "Comment needed", "Confidence", "Status",
+                                              *[f["label"] for f in fields],
+                                              "Confidence", "Cost", "Approved", *([RULE] if rules else [])]
+                                if reviewer else None,
+                                disabled=["Row", "Requirement", RULE, "Confidence", "Status",
                                           "Unassigned by"],
                                 key=f"grid:{key}:{_rows_sig(view)}:{st.session_state.get('grid_rev', 0)}")
 
@@ -250,7 +251,7 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
     if blocked:
         st.session_state[f"grid_blocked:{key}"] = (
             f"row{'s' * (len(blocked) > 1)} {', '.join(map(str, blocked))} need{'s' * (len(blocked) == 1)} a comment "
-            "first: see Comment needed.")
+            "first (hover ⚠️ for what it must include).")
         refresh()  # redraw from the database, so the refused ticks clear
     if changed:
         # Rerun so everything drawn before this grid (board totals, other grids) shows the change too.
