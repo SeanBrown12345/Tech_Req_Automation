@@ -663,6 +663,11 @@ def _run_job(job_id: str, exclude_sources: list[str] | None) -> None:
         kb_conn.close()
 
         llm = anthropic.Anthropic(max_retries=4)
+        if not plan.get("rules_read"):
+            try:
+                save_plan(job_id, read_rules(plan, llm))
+            except Exception:  # noqa: BLE001 - rules are a review aid; "Read from instructions" can retry
+                pass
         sheet_plans = {sp["name"]: sp for sp in plan["sheets"]}
         batches = []
         for sheet in dict.fromkeys(r["sheet"] for r in pending):
@@ -743,6 +748,105 @@ def save_review(job_id: str, sheet: str, row_num: int, final: dict | None = None
 
 
 # ================================================================================================
+# Response rules: responses the worksheet wants a comment with
+# ================================================================================================
+# Worksheets often require a comment with some responses (Anchorage: "Scheduled Release" needs the release #
+# and date, "Modification Required" the severity and a cost estimate). A choice field in a sheet plan can carry
+# "requires": {option: what the comment must give}. SMEs see it beside the response, and a row with that
+# response isn't approved while its comment is empty. The plan's "rules_read" says they were read from the
+# instructions once, so a draft doesn't read them again over the team's edits.
+
+_COMMENT_WORDS = ("comment", "narrative", "explanation", "remark")
+
+
+def comment_field(sheet_plan: dict) -> dict | None:
+    """The free-text field a required comment goes in: the one titled as a comment or narrative, else the
+    sheet's only free-text field."""
+    texts = [f for f in sheet_plan["fields"] if f.get("include", True) and f["kind"] == "text"]
+    return next((f for f in texts if any(w in f["label"].lower() for w in _COMMENT_WORDS)),
+                texts[0] if len(texts) == 1 else None)
+
+
+def required_comment(sheet_plan: dict, answers: dict, keys) -> str | None:
+    """What the comment must give for this row's response (None when the response needs no comment).
+    `keys` are the row's fill keys: a comment cell the client already filled isn't ours to check."""
+    comment = comment_field(sheet_plan)
+    if comment is None or comment["key"] not in keys:
+        return None
+    return next((note for f in sheet_plan["fields"] if f.get("include", True) and f["key"] in keys
+                 if (note := (f.get("requires") or {}).get(answers.get(f["key"]) or ""))), None)
+
+
+def missing_comment(sheet_plan: dict, answers: dict, keys) -> str | None:
+    """required_comment, when the comment is still empty: the row can't be approved yet."""
+    note = required_comment(sheet_plan, answers, keys)
+    return note if note and not str(answers.get(comment_field(sheet_plan)["key"]) or "").strip() else None
+
+
+def _row_missing(sheet_plan: dict | None, row) -> str | None:
+    """missing_comment for a rows-table row, with its current answers (edits, else the AI's)."""
+    if sheet_plan is None or not (row["final"] or row["ai"]):
+        return None
+    return missing_comment(sheet_plan, json.loads(row["final"] or row["ai"]), json.loads(row["fill"]))
+
+
+def _rules_schema() -> dict:
+    return {"type": "object", "additionalProperties": False, "required": ["rules"], "properties": {
+        "rules": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False, "required": ["sheet", "field", "option", "requires"],
+            "properties": {"sheet": {"type": "string"}, "field": {"type": "string"}, "option": {"type": "string"},
+                           "requires": {"type": "string"}}}}}}
+
+
+def read_rules(plan: dict, llm=None) -> dict:
+    """Set each choice field's "requires" from the worksheet instructions (one AI call) and mark the plan's
+    rules as read; returns the plan. Fields the instructions say nothing about get no rules."""
+    choices = [(sp, f) for sp in plan["sheets"] if sp.get("include", True) and comment_field(sp)
+               for f in sp["fields"] if f.get("include", True) and f["kind"] == "choice" and f.get("options")]
+    found = []
+    if choices and (plan.get("instructions") or "").strip():
+        listing = "\n".join(f'- sheet "{sp["name"]}", field "{f["key"]}" ("{f["label"]}"), comment field '
+                            f'"{comment_field(sp)["label"]}": options {json.dumps(f["options"], ensure_ascii=False)}'
+                            for sp, f in choices)
+        response = (llm or anthropic.Anthropic(max_retries=4)).messages.create(
+            model=MODEL, max_tokens=4000,
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": _rules_schema()}},
+            messages=[{"role": "user", "content": f"""An RFP requirements worksheet has these response fields:
+{listing}
+
+Its instructions are below. List every response option for which the instructions require the vendor to write something in the comment field (for example a release number and date, a roadmap date, an explanation, a cost or hours estimate). For each, give "requires": a short instruction to the person answering, saying what the comment must include, in the instructions' terms (e.g. "Give the release number and estimated date"). Copy "sheet", "field" and "option" exactly as listed. Leave out options the instructions require nothing for; return an empty list if there are none.
+
+INSTRUCTIONS:
+{plan["instructions"]}"""}])
+        found = json.loads(next(b.text for b in response.content if b.type == "text"))["rules"]
+    for sp, f in choices:
+        f["requires"] = {r["option"]: r["requires"].strip() for r in found
+                         if r["sheet"] == sp["name"] and r["field"] == f["key"] and r["option"] in f["options"]
+                         and r["requires"].strip()}
+    plan["rules_read"] = True
+    return plan
+
+
+def save_plan(job_id: str, plan: dict) -> None:
+    conn = connect_drafts()
+    with conn:
+        conn.execute("UPDATE jobs SET plan = ? WHERE job_id = ?", (json.dumps(plan), job_id))
+    conn.close()
+
+
+def set_rules(job_id: str, sheet: str, field_key: str, requires: dict[str, str]) -> None:
+    """Replace one choice field's response rules (edited on the draft page)."""
+    conn = connect_drafts()
+    plan = json.loads(conn.execute("SELECT plan FROM jobs WHERE job_id = ?", (job_id,)).fetchone()["plan"])
+    conn.close()
+    field = next(f for sp in plan["sheets"] if sp["name"] == sheet for f in sp["fields"] if f["key"] == field_key)
+    field["requires"] = {o: n.strip() for o, n in requires.items() if n and n.strip()}
+    plan["rules_read"] = True
+    save_plan(job_id, plan)
+    apply_auto_approve(job_id)  # the rule's approvals follow the new rules
+
+
+# ================================================================================================
 # Auto-approve
 # ================================================================================================
 
@@ -751,15 +855,18 @@ def auto_approve_rule(job) -> dict:
     return _rule(job["auto_approve"])
 
 
-def _auto_approves(row, rule: dict, text_keys: set[str]) -> bool:
+def _auto_approves(row, rule: dict, sheet_plan: dict | None) -> bool:
     mode = rule["mode"]
     if not rule["enabled"] or row["error"] or row["cost_impact"] or row["confidence"] != "high":
         return False  # rows flagged for pricing always need a person
+    if _row_missing(sheet_plan, row):
+        return False  # its response needs a comment it doesn't have
     if (row["best_similarity"] or 0) < rule["min_sim"]:
         return False
     if mode in ("standard", "standard_blank") and row["status"] not in AUTO_STATUSES:
         return False
     if mode == "standard_blank":  # anything we wrote (a comment, a narrative) needs a person
+        text_keys = {f["key"] for f in (sheet_plan or {}).get("fields", []) if f["kind"] == "text"}
         answer = json.loads(row["final"] or row["ai"])
         return not any(str(answer.get(k) or "").strip() for k in json.loads(row["fill"]) if k in text_keys)
     return True
@@ -782,12 +889,11 @@ def apply_auto_approve(job_id: str) -> int:
     try:
         job = conn.execute("SELECT plan, auto_approve FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
         rule = auto_approve_rule(job)
-        text_keys = {sp["name"]: {f["key"] for f in sp["fields"] if f["kind"] == "text"}
-                     for sp in json.loads(job["plan"])["sheets"]}
+        sheet_plans = {sp["name"]: sp for sp in json.loads(job["plan"])["sheets"]}
         rows = conn.execute("SELECT * FROM rows WHERE job_id = ? AND ai IS NOT NULL AND partner_status IS NULL"
                             " AND (approved_by IS NULL OR approved_by = 'auto')", (job_id,)).fetchall()
         approve = {(r["sheet"], r["row_num"]) for r in rows
-                   if _auto_approves(r, rule, text_keys.get(r["sheet"], set()))}
+                   if _auto_approves(r, rule, sheet_plans.get(r["sheet"]))}
         withdraw = [(r["sheet"], r["row_num"]) for r in rows
                     if r["approved_by"] == "auto" and (r["sheet"], r["row_num"]) not in approve]
         with conn:
@@ -1213,13 +1319,20 @@ def read_partner_answers(job_id: str, partner: str, data: bytes) -> list[dict]:
     return out
 
 
-def approve_partner_answers(job_id: str, partner: str) -> int:
-    """Approve every answer the partner sent back that isn't approved yet; returns how many."""
+def approve_partner_answers(job_id: str, partner: str) -> tuple[int, int]:
+    """Approve every answer the partner sent back that isn't approved yet, except those whose response needs a
+    comment they left empty; returns (approved, held back)."""
     conn = connect_drafts()
     try:
+        sheet_plans = {sp["name"]: sp for sp in json.loads(conn.execute(
+            "SELECT plan FROM jobs WHERE job_id = ?", (job_id,)).fetchone()["plan"])["sheets"]}
+        rows = conn.execute("SELECT * FROM rows WHERE job_id = ? AND assignee = ? AND partner_status = 'received'"
+                            " AND reviewed = 0", (job_id, partner)).fetchall()
+        ok = [(job_id, r["sheet"], r["row_num"]) for r in rows if not _row_missing(sheet_plans.get(r["sheet"]), r)]
         with conn:
-            return conn.execute("UPDATE rows SET reviewed = 1, approved_by = 'person'"
-                                " WHERE job_id = ? AND assignee = ? AND partner_status = 'received' AND reviewed = 0", (job_id, partner)).rowcount
+            conn.executemany("UPDATE rows SET reviewed = 1, approved_by = 'person'"
+                             " WHERE job_id = ? AND sheet = ? AND row_num = ?", ok)
+        return len(ok), len(rows) - len(ok)
     finally:
         conn.close()
 

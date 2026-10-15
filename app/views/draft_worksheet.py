@@ -298,6 +298,45 @@ def show_job(job_id: str):
     st.caption(f"{job.filename} · created {job.created_at[:16].replace('T', ' ')} UTC · model {job.model}")
 
 
+def _response_rules(job_id: str, plan: dict) -> None:
+    """The responses each sheet wants a comment with (see draft.required_comment), editable; SMEs see them
+    beside the response and can't approve such a row with an empty comment."""
+    choices = [(sp, f) for sp in plan["sheets"] if sp.get("include", True) and draft.comment_field(sp)
+               for f in sp["fields"] if f.get("include", True) and f["kind"] == "choice" and f.get("options")]
+    if not choices:
+        return
+    count = sum(len(f.get("requires") or {}) for _, f in choices)
+    label = (f"Responses that need a comment ({count})" if count else
+             "Responses that need a comment" + ("" if plan.get("rules_read") else " (not read yet)"))
+    with st.expander(label, icon=":material/edit_note:"):
+        st.caption("Read from the worksheet instructions. SMEs see the note beside the response, and a row with "
+                   "that response can't be approved while its comment is empty. Clear a note to drop the rule.")
+        for sp, f in choices:
+            if len(choices) > 1:
+                st.markdown(f"**{sp['name']} · {f['label']}**")
+            requires = f.get("requires") or {}
+            frame = pd.DataFrame({"Response": f["options"], "Comment must include": [requires.get(o, "") for o in
+                                                                                     f["options"]]})
+            key = f"rules:{job_id}:{sp['name']}:{f['key']}:{st.session_state.get('rules_rev', 0)}"
+            edited = st.data_editor(frame, hide_index=True, width="stretch", key=key, disabled=["Response"],
+                                    column_config={"Comment must include": st.column_config.TextColumn(
+                                        width="large", help="Leave empty when this response needs no comment")})
+            new = dict(zip(edited.Response, edited["Comment must include"].fillna("")))
+            if {o: n.strip() for o, n in new.items() if n.strip()} != requires:
+                draft.set_rules(job_id, sp["name"], f["key"], new)
+                review_grid.refresh()
+                st.rerun()
+        if st.button("Read again from instructions" if plan.get("rules_read") else "Read from instructions",
+                     icon=":material/auto_awesome:", key=f"rules-read:{job_id}",
+                     help="Replaces the notes above with what the AI reads in the worksheet instructions"):
+            with st.spinner("Reading the instructions..."):
+                draft.save_plan(job_id, draft.read_rules(plan))
+            draft.apply_auto_approve(job_id)
+            st.session_state.rules_rev = st.session_state.get("rules_rev", 0) + 1
+            review_grid.refresh()
+            st.rerun()
+
+
 def _job_page(job_id: str):
     if draft.reconcile(job_id):  # was left "running" by a restarted server
         st.rerun()
@@ -394,6 +433,7 @@ def _job_page(job_id: str):
                          "out of their area (Assigned to › Unassigned by an SME lists those)")
         with st.container(key="auto-approve"):
             _auto_approve(draft.auto_approve_rule(job), f"auto:{job_id}", job_id)
+        _response_rules(job_id, plan)
         if note := st.session_state.pop("auto_note", None):
             st.toast(note, icon=":material/check_circle:")
         if modules.load() and (undetected := int(done.module.isna().sum())):

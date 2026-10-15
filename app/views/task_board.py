@@ -209,8 +209,9 @@ def _confirm_approve_all(job_id: str, partner: str, count: int, draft_name: str)
     if cancel.button("Cancel", width="stretch"):
         st.rerun()
     if go.button("Approve all", type="primary", width="stretch"):
-        done = draft.approve_partner_answers(job_id, partner)
-        st.session_state.partner_flash = f"Approved {done:,} answers from {partner}."
+        done, held = draft.approve_partner_answers(job_id, partner)
+        st.session_state.partner_flash = f"Approved {done:,} answers from {partner}." + (
+            f" {held:,} left open: their response needs a comment and it's empty." if held else "")
         review_grid.refresh()
         st.rerun()
 
@@ -293,8 +294,13 @@ def _save_answers(job_id: str, sheet: str, row_num: int, fields: list[dict], ans
 
 
 def _move(step: int, approve: bool | None, job_id: str, sheet: str, row_num: int, fields: list[dict],
-          answers: dict) -> None:
+          answers: dict, sheet_plan: dict | None = None) -> None:
     _save_answers(job_id, sheet, row_num, fields, answers)
+    if approve and sheet_plan:
+        current = {f["key"]: st.session_state.get(_field_key(job_id, sheet, row_num, f["key"])) or "" for f in fields}
+        if note := draft.missing_comment(sheet_plan, current, [f["key"] for f in fields]):
+            st.session_state.review_blocked = (job_id, sheet, row_num, note)  # stay on the row and say why
+            return
     if approve is not None:
         draft.save_review(job_id, sheet, row_num, reviewed=approve)
     st.session_state.review["pos"] += step
@@ -424,6 +430,9 @@ def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str, mode: 
                 options = f["options"] if f["kind"] == "choice" else [f["labels"][c] for c in f["columns"]]
                 st.selectbox(f["label"], options, index=options.index(value) if value in options else None,
                              key=key, on_change=_save_answers, args=nav)
+                picked = st.session_state.get(key)
+                if picked and draft.required_comment(sheet_plan, {f["key"]: picked}, [x["key"] for x in fields]):
+                    st.error(f["requires"][picked], icon=":material/warning:")
             else:
                 st.text_area(f["label"], value=value, key=key, height=140, on_change=_save_answers, args=nav)
         original = json.loads(r.ai)
@@ -435,6 +444,11 @@ def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str, mode: 
                     on_change=_flag, args=(job_id, sheet, row_num),
                     help="Meeting this requirement may add cost. Highlighted yellow in the download.")
 
+        blocked = st.session_state.pop("review_blocked", None)
+        if blocked and blocked[:3] == (job_id, sheet, row_num):
+            comment = draft.comment_field(sheet_plan)["label"]
+            st.error(f"Not approved yet: this response needs a comment in **{comment}**. {blocked[3].rstrip('.')}.",
+                     icon=":material/error:")
         p, s, h, a = st.columns([1, 1, 1, 2])
         p.button("Previous", icon=":material/chevron_left:", width="stretch", disabled=rv["pos"] == 0,
                  on_click=_move, args=(-1, None, *nav))
@@ -446,7 +460,7 @@ def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str, mode: 
             st.button("Undo approval", type="tertiary", on_click=_move, args=(0, False, *nav))
         else:
             a.button("Approve & next", type="primary", icon=":material/check:", width="stretch",
-                     on_click=_move, args=(1, True, *nav))
+                     on_click=_move, args=(1, True, *nav), kwargs={"sheet_plan": sheet_plan})
         # Keyed per row, so it starts closed on the next row after a hand-off.
         with h.popover("Reassign", icon=":material/move_item:", width="stretch",
                        key=_field_key(job_id, sheet, row_num, "_reassign_menu"),
