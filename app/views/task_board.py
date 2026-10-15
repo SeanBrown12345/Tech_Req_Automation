@@ -5,6 +5,7 @@ No sign-in: people find themselves by name. The address carries where they are (
 and &sheet= in a review), so a link opens someone's view directly and a refresh keeps the place."""
 
 import json
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -140,12 +141,17 @@ def person_view(rows: pd.DataFrame, person: str) -> None:
         return
     st.caption("Your assigned sheets. **Review** takes you through the rows one at a time, least "
                "confident first, then the ones that need pricing. **Review in table** shows them all at once.")
+    dues = draft.due_dates(person)
     for (job_id, sheet), view in mine.groupby(["job_id", "sheet"], sort=False):
         _, multi = _sheet_plan(view, sheet)
         c = _counts(view)
         with st.container(border=True):
             title, actions = st.columns([3, 2], vertical_alignment="center")
             title.markdown(f"#### {view.draft.iloc[0]}" + (f" · {sheet}" if multi else ""))
+            if due := dues.get(job_id):
+                d = date.fromisoformat(due)
+                title.caption(f":material/event: Due {d:%a} {d.day} {d:%b %Y}"
+                              + (" · **past due**" if d < date.today() and c["left"] else ""))
             with actions.container(horizontal=True, horizontal_alignment="right"):
                 st.button("Review" if c["left"] else "Review again", key=f"start:{job_id}:{sheet}",
                           icon=":material/play_arrow:", type="primary" if c["left"] else "secondary",

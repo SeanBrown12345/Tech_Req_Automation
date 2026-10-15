@@ -111,6 +111,19 @@ def _confirm_delete(job_id: str):
         st.rerun()
 
 
+def _email_note(job_id: str) -> None:
+    """Assigning doesn't email anyone: a reminder that SMEs here haven't been told, linking to where they are."""
+    work = draft.sme_workload()
+    pending = work[(work.job_id == job_id) & (work.new > 0)]
+    if pending.empty:
+        return
+    rows, smes = int(pending.new.sum()), len(pending)
+    with st.container(horizontal=True, vertical_alignment="center"):
+        st.caption(f":material/mail: **{rows:,}** newly assigned row{'s' * (rows != 1)} for {smes} "
+                   f"SME{'s' * (smes != 1)} not emailed yet", width="content")
+        st.page_link("views/notifications.py", label="Notifications", icon=":material/arrow_forward:")
+
+
 def _pick(job_id: str):
     st.session_state.draft_job = job_id
     st.session_state.draft_picker = False  # close the list
@@ -415,6 +428,7 @@ def _job_page(job_id: str):
         if show == "Errors":
             view = view[view.error.notna() & view.ai.isna()]
             st.dataframe(view[["row_num", "req_id", "requirement", "error"]], hide_index=True, width="stretch")
+            _email_note(job_id)
             return
         view = view[view.ai.notna()]
 
@@ -449,6 +463,7 @@ def _job_page(job_id: str):
 
         if view.empty:
             st.caption("No rows match.")
+            _email_note(job_id)
             return
         grid_key = f"{job_id}:{sheet}:{show}:{section}:{module}:{who}:{text}"
         selected = review_grid.grid(job_id, sp, view, key=grid_key, returned=who == RETURNED, selectable=True)
@@ -495,6 +510,7 @@ def _job_page(job_id: str):
         if selected:
             actions.button("Clear selection", icon=":material/deselect:", type="tertiary",
                            on_click=review_grid.set_selection, args=(grid_key, False))
+        _email_note(job_id)  # at the foot of the card, under the actions that assign rows
 
     # ---- Answer details ----
     with st.container(border=True, key="card-answer"):

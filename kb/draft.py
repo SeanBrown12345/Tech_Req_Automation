@@ -213,6 +213,7 @@ CREATE TABLE IF NOT EXISTS rows (
     assignee     TEXT,                  -- SME responsible for the row; NULL = unassigned
     returned_by  TEXT,                  -- unassigned because this SME handed it back (the "returned" pool)
     return_note  TEXT,                  -- their reason, if they gave one
+    notified     TEXT,                  -- the assignee last emailed about the row; differs = email pending
     module       TEXT,                  -- product module (kb/modules.py), or General; NULL = not detected yet
     partner_status TEXT,                -- rows assigned to a partner: NULL (not sent) | sent | received
     sent_at      TEXT,                  -- when the partner's trimmed worksheet was last exported
@@ -237,6 +238,14 @@ CREATE TABLE IF NOT EXISTS people (
     kind        TEXT NOT NULL DEFAULT 'sme',  -- sme (uses the app) | partner (answers by email)
     modules     TEXT                    -- partners: JSON list of the modules they cover
 );
+CREATE TABLE IF NOT EXISTS notices (
+    job_id       TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
+    person       TEXT NOT NULL,         -- SME (people.name)
+    due          TEXT,                  -- when their review of the draft is due, YYYY-MM-DD
+    emailed_at   TEXT,                  -- last email to them about the draft
+    emailed_kind TEXT,                  -- new (assignments) | reminder
+    PRIMARY KEY (job_id, person)
+);
 """
 
 
@@ -244,7 +253,8 @@ CREATE TABLE IF NOT EXISTS people (
 _ADDED_COLUMNS = {
     "jobs": {"auto_approve": "TEXT"},
     "rows": {"assignee": "TEXT", "returned_by": "TEXT", "return_note": "TEXT", "module": "TEXT",
-             "partner_status": "TEXT", "sent_at": "TEXT", "received_at": "TEXT", "approved_by": "TEXT"},
+             "partner_status": "TEXT", "sent_at": "TEXT", "received_at": "TEXT", "approved_by": "TEXT",
+             "notified": "TEXT"},
     "people": {"kind": "TEXT NOT NULL DEFAULT 'sme'", "modules": "TEXT"},
 }
 
@@ -282,6 +292,16 @@ def _seed_modules(conn) -> None:
         conn.execute("INSERT INTO app_settings (key, value) VALUES ('modules_seeded', ?)", (_now(),))
 
 
+def _backfill_notified(conn) -> None:
+    """Rows assigned before email notifications existed count as notified, so the first email doesn't
+    send everyone about work they already have."""
+    if conn.execute("SELECT 1 FROM app_settings WHERE key = 'notified_backfilled'").fetchone():
+        return
+    with conn:
+        conn.execute("UPDATE rows SET notified = assignee WHERE assignee IS NOT NULL")
+        conn.execute("INSERT INTO app_settings (key, value) VALUES ('notified_backfilled', ?)", (_now(),))
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -296,6 +316,7 @@ def connect_drafts():
             _migrate(conn)
             _sync_people(conn)
             _seed_modules(conn)
+            _backfill_notified(conn)
             _drafts_ready = True
         return conn
     conn.execute("PRAGMA journal_mode = WAL")  # readers (the dashboard) don't block the drafting thread
@@ -304,6 +325,7 @@ def connect_drafts():
         _migrate(conn)
         _sync_people(conn)
         _seed_modules(conn)
+        _backfill_notified(conn)
         _sqlite_ready.add(settings.DRAFTS_DB_PATH)
     return conn
 
@@ -820,6 +842,73 @@ def return_row(job_id: str, sheet: str, row_num: int, by: str, note: str | None 
     conn.close()
 
 
+def sme_workload() -> "pd.DataFrame":
+    """One line per SME per draft they have open rows in (partners aren't emailed): person, email, job_id,
+    draft_name, client, open, new (open rows they haven't been emailed about), due, emailed_at, emailed_kind."""
+    conn = connect_drafts()
+    try:
+        return db.read_sql(conn, """
+            SELECT r.assignee AS person, p.email, r.job_id, j.name AS draft_name, j.client,
+                   COUNT(*) AS open,
+                   COUNT(CASE WHEN r.notified IS NULL OR r.notified <> r.assignee THEN 1 END) AS new,
+                   n.due, n.emailed_at, n.emailed_kind
+            FROM rows r
+            JOIN people p ON p.name = r.assignee AND p.kind = ?
+            JOIN jobs j ON j.job_id = r.job_id
+            LEFT JOIN notices n ON n.job_id = r.job_id AND n.person = r.assignee
+            WHERE r.reviewed = 0 AND r.ai IS NOT NULL
+            GROUP BY r.assignee, p.email, r.job_id, j.name, j.client, j.created_at, n.due, n.emailed_at,
+                     n.emailed_kind
+            ORDER BY j.created_at DESC, LOWER(r.assignee)""", [SME])
+    finally:
+        conn.close()
+
+
+def open_rows(job_id: str, person: str) -> "pd.DataFrame":
+    """The person's open rows in a draft: sheet, row_num, new (not yet emailed about them)."""
+    conn = connect_drafts()
+    try:
+        return db.read_sql(conn, """
+            SELECT sheet, row_num, CASE WHEN notified IS NULL OR notified <> assignee THEN 1 ELSE 0 END AS new
+            FROM rows WHERE job_id = ? AND assignee = ? AND reviewed = 0 AND ai IS NOT NULL
+            ORDER BY sheet, row_num""", [job_id, person])
+    finally:
+        conn.close()
+
+
+def due_dates(person: str) -> dict[str, str]:
+    """job_id -> due date (YYYY-MM-DD) for the drafts the person has one on."""
+    conn = connect_drafts()
+    try:
+        return {r[0]: r[1] for r in conn.execute(
+            "SELECT job_id, due FROM notices WHERE person = ? AND due IS NOT NULL", (person,))}
+    finally:
+        conn.close()
+
+
+def set_due(job_id: str, person: str, due: str | None) -> None:
+    """When `person`'s review of the draft is due (YYYY-MM-DD; None clears it)."""
+    conn = connect_drafts()
+    with conn:
+        conn.execute("INSERT INTO notices (job_id, person, due) VALUES (?, ?, ?)"
+                     " ON CONFLICT (job_id, person) DO UPDATE SET due = excluded.due", (job_id, person, due))
+    conn.close()
+
+
+def record_email(job_id: str, person: str, kind: str, rows: list[tuple[str, int]]) -> None:
+    """`person` was emailed (kind new | reminder) about these open (sheet, row_num): they count as notified,
+    rows reassigned since are left pending."""
+    conn = connect_drafts()
+    with conn:
+        conn.executemany("UPDATE rows SET notified = assignee"
+                         " WHERE job_id = ? AND sheet = ? AND row_num = ? AND assignee = ?",
+                         [(job_id, sheet, int(n), person) for sheet, n in rows])
+        conn.execute("INSERT INTO notices (job_id, person, emailed_at, emailed_kind) VALUES (?, ?, ?, ?)"
+                     " ON CONFLICT (job_id, person) DO UPDATE SET emailed_at = excluded.emailed_at,"
+                     " emailed_kind = excluded.emailed_kind", (job_id, person, _now(), kind))
+    conn.close()
+
+
 # ================================================================================================
 # People rows can be assigned to: SMEs (use the app) and partners (answer by email)
 # ================================================================================================
@@ -893,6 +982,8 @@ def update_person(old_name: str, name: str, email: str | None, areas: str | None
             if name != old_name:
                 conn.execute("UPDATE rows SET assignee = ? WHERE assignee = ?", (name, old_name))
                 conn.execute("UPDATE rows SET returned_by = ? WHERE returned_by = ?", (name, old_name))
+                conn.execute("UPDATE rows SET notified = ? WHERE notified = ?", (name, old_name))
+                conn.execute("UPDATE notices SET person = ? WHERE person = ?", (name, old_name))
         return True
     finally:
         conn.close()
@@ -908,6 +999,7 @@ def remove_person(name: str) -> None:
                          " partner_status = NULL, sent_at = NULL, received_at = NULL"
                          " WHERE assignee = ? AND reviewed = 0", (name, name))
             conn.execute("UPDATE rows SET assignee = NULL WHERE assignee = ?", (name,))
+            conn.execute("DELETE FROM notices WHERE person = ?", (name,))
             conn.execute("DELETE FROM people WHERE name = ?", (name,))
     finally:
         conn.close()
@@ -917,6 +1009,7 @@ def delete_job(job_id: str) -> None:
     conn = connect_drafts()
     with conn:
         conn.execute("DELETE FROM rows WHERE job_id = ?", (job_id,))
+        conn.execute("DELETE FROM notices WHERE job_id = ?", (job_id,))
         conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
     conn.close()
     workbook_path(job_id).unlink(missing_ok=True)

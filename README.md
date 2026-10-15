@@ -37,6 +37,17 @@ settings-style page with Overview, Search and Add worksheet listed on the left.
 | `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | - | Matcha gateway access for Claude (drafting). Put them in `.env` locally. |
 | `KB_LLM_MODEL` | `claude-opus-5-5` | Drafting model (the only one deployed on Matcha) |
 | `KB_LLM_EFFORT` | `medium` | Drafting effort: `low` / `medium` / `high` |
+| `NOTIFY_WEBHOOK_URL` | - | Power Automate flow that emails SMEs about newly assigned rows ([docs/email-notifications.md](docs/email-notifications.md)). Used instead of SMTP when set. |
+| `SMTP_HOST` / `SMTP_PORT` | - / `587` | Or a mail relay for those emails. Neither set = email off. |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | - | Relay login, if it needs one |
+| `SMTP_FROM` | `SMTP_USERNAME` | Sender address |
+| `SMTP_STARTTLS` | `true` | `false` for a relay without TLS |
+| `REQFILL_BASE_URL` | - | The app's address (e.g. `https://<RFP Pilot URL>/ReqFill`), for the task-board link in emails |
+
+Assigning rows doesn't email anyone by itself. **Admin › Notifications** lists each SME's open rows per draft,
+how many they haven't been emailed about and when they were last emailed. From there you set each SME's due
+date and send new-assignment emails or reminders (one email per SME per draft, with the due date and a link to
+their task board). Partners aren't emailed (they get the trimmed worksheet export).
 
 Drafts are stored in `KB_DATA_DIR/drafts.sqlite` (+ the uploaded workbooks in `drafts/`), separate from the
 knowledge base, which is derived data and safe to rebuild.
