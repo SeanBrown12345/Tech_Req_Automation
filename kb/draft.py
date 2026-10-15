@@ -39,6 +39,17 @@ EVIDENCE_PER_ROW = 6
 SIM_HIGH, SIM_MEDIUM = 0.85, 0.75
 SIM_SAME = 0.95  # past requirement is effectively the same one; its comment (or lack of one) is the model
 COST_STATUSES = {"CUSTOM", "THIRD_PARTY"}
+# Requirements that go to pricing. Checked against a past bid's priced rows: flagging every mention of a report,
+# notification, integration or workflow flagged ~250 rows never priced, while flagging only what isn't standard
+# missed the reports and notices the team built as custom Smart / Cognos reports. Specific criteria is the line.
+PRICING_TRIGGERS = [
+    "a report, list, summary or export file defined by specific criteria, data or format (e.g. accounts over 90 days "
+    "past due by rate class; deposits refunded per month; a payment file in a lender's format)",
+    "notifications triggered by a specific event, condition or schedule (e.g. a suspected leak, a budget-billing "
+    "review coming due, a service order being completed)",
+    "an integration with a third-party system we don't already interface with",
+    "a workflow (steps, approvals or routing) particular to this client that has to be built rather than configured",
+]
 RED, YELLOW = "FFFFC7CE", "FFFFFF00"
 _PLACEHOLDER = re.compile(r"\[[^\]]{2,}\]")
 _CONF_RANK = {"low": 0, "medium": 1, "high": 2}
@@ -444,7 +455,9 @@ Rules:
 7. "status" is our internal classification of the answer:
 {statuses}
 8. "confidence": high = closely matching evidence answers this directly and consistently; medium = related evidence that needs inference or has minor gaps; low = little or no relevant evidence, conflicting evidence, or any placeholder in your answer.
-9. "cost_impact": true when meeting the requirement likely adds implementation cost beyond the base proposal - customization or modification, a third-party product, an additional module or license, or extra services hours. Explain briefly in "cost_note" ("" when false).
+9. "cost_impact": true when either applies; explain briefly in "cost_note", naming which ("" when false):
+   a. The requirement asks for one of the following, even if a standard report or notice might cover it: {"; ".join(PRICING_TRIGGERS)}. A generic ability does not count - e.g. "ability to report on X", "ability to send notifications", "ability to export data" - nor do the product's existing interfaces and configurable workflows.
+   b. Meeting the requirement likely adds implementation cost beyond the base proposal - customization or modification, a third-party product, an additional module or license, or extra services hours.
 10. "rationale": one or two sentences for the reviewer on why you answered this way; cite evidence IDs in "evidence_used".
 
 FIELDS TO FILL on sheet "{sheet_plan["name"]}":
