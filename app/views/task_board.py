@@ -495,6 +495,33 @@ _NOTE_CARDS = f"""<style>
 </style>"""
 
 
+_FULLSCREEN_ON = 'body:has([class*="st-key-gridbox-"] button[aria-label="Close fullscreen"])'
+# Open: the panel takes the right of the page, as Office's comments pane does, and the row view widens to make
+# room. In the table's fullscreen it floats on the right, over the page, and the table narrows beside it.
+_PANEL_OPEN = f"""<style>
+[data-testid='stMainBlockContainer'] {{ max-width: 1600px; }}
+{_FULLSCREEN_ON} [class*="st-key-gridbox-"] [data-testid="stFullScreenFrame"] {{ width: calc(100vw - 400px) !important; }}
+{_FULLSCREEN_ON} [class*="st-key-gridbox-"] [data-testid="stFullScreenFrame"] [data-testid="stDataFrame"],
+{_FULLSCREEN_ON} [class*="st-key-gridbox-"] [data-testid="stFullScreenFrame"] [data-testid="stDataFrameResizable"] {{
+    width: calc(100vw - 424px) !important;  /* the table keeps the whole window's width otherwise */
+}}
+{_FULLSCREEN_ON} .st-key-notes-pane {{
+    position: fixed; top: 0; right: 0; bottom: 0; width: 400px; z-index: 1000051; overflow-y: auto;
+    border-radius: 0; border-width: 0 0 0 1px;
+}}
+{_FULLSCREEN_ON} .st-key-notes-list {{ height: auto !important; max-height: none !important; }}
+</style>"""
+# Closed: the panel's column is hidden and the rows take the whole width.
+_PANEL_CLOSED = """<style>
+[data-testid="stHorizontalBlock"]:has(.st-key-notes-pane) > [data-testid="stColumn"]:has(.st-key-notes-pane) {
+    display: none;
+}
+[data-testid="stHorizontalBlock"]:has(.st-key-notes-pane) > [data-testid="stColumn"]:not(:has(.st-key-notes-pane)) {
+    width: 100% !important; flex: 1 1 100% !important;
+}
+</style>"""
+
+
 def _notes_panel(person: str, job_id: str, sheet: str, view: pd.DataFrame, mode: str | None) -> None:
     """The notes on this person's rows of the sheet, in sheet order: each row's conversation with a reply box,
     and Go to row. Rows where someone else wrote last are marked as waiting on them."""
@@ -513,7 +540,7 @@ def _notes_pane(person: str, job_id: str, sheet: str, view: pd.DataFrame, mode: 
         st.caption("No notes on your rows of this sheet yet. A note left when a row is handed to you, or written "
                    "on one of your rows, shows here.")
         return
-    with st.container(height=700, border=False, gap="small"):  # scrolls on its own, beside the rows
+    with st.container(height=700, border=False, gap="small", key="notes-list"):  # scrolls on its own, beside the rows
         for r in noted.itertuples():
             with st.container(border=True, gap=None, key=f"notecard-{r.row_num}"):
                 # Clicking the card goes to the row: an invisible button over the card, under the reply box.
@@ -576,10 +603,12 @@ def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str, mode: 
                                  width="stretch", on_change=_switch_mode, args=(person, job_id, sheet, key))
     approved = int(view.reviewed.sum())
     st.progress(approved / len(view), text=f"{approved:,} of {len(view):,} approved")
-    main = st.container()
-    if not partner and st.session_state.get(panel):
-        # The panel takes the right of the page, as Office's comments pane does; the row view widens to make room.
-        st.html("<style>[data-testid='stMainBlockContainer'] { max-width: 1600px; }</style>")
+    if partner:
+        main = st.container()
+    else:
+        # The panel is always laid out and shown or hidden by style, so toggling it leaves the page's elements
+        # where they are: the table isn't rebuilt, and stays in fullscreen.
+        st.html(_PANEL_OPEN if st.session_state.get(panel) else _PANEL_CLOSED)
         main, side = st.columns([3, 1], gap="medium")
         with side:
             _notes_panel(person, job_id, sheet, view, mode)
@@ -716,8 +745,13 @@ body:has([class*="st-key-gridbox-"] button[aria-label="Close fullscreen"]) .st-k
     position: fixed; top: 6px; left: 1rem; z-index: 1000051; width: auto;
 }
 body:has([class*="st-key-gridbox-"] button[aria-label="Close fullscreen"]) .st-key-table-fullscreen { display: none; }
-body:has([class*="st-key-gridbox-"] button[aria-label="Close fullscreen"]) .st-key-table-bar [data-testid="stPopover"] button {
-    border-color: transparent !important;  /* its border would run into the table's top edge */
+.st-key-table-notes { display: none; }
+body:has([class*="st-key-gridbox-"] button[aria-label="Close fullscreen"]) .st-key-table-notes { display: block; }
+/* In fullscreen, Reassign and Notes are plain text and icon over the table: no box (its border would run into
+   the table's top edge). */
+body:has([class*="st-key-gridbox-"] button[aria-label="Close fullscreen"]) .st-key-table-bar [data-testid="stPopover"] button,
+body:has([class*="st-key-gridbox-"] button[aria-label="Close fullscreen"]) .st-key-table-notes button {
+    border-color: transparent !important; background: transparent !important; box-shadow: none !important;
 }
 body:has([class*="st-key-gridbox-"] button[aria-label="Close fullscreen"]) [data-baseweb="popover"] {
     z-index: 1000052 !important;
@@ -805,6 +839,10 @@ def _table_review(person: str, job_id: str, sheet: str, view: pd.DataFrame, shee
                      placeholder="Why they're theirs, or what you need from them. Left on each row.")
         st.button("Accept", type="primary", width="stretch", disabled=choice is None,
                   on_click=_reassign_rows, args=(person, job_id, sheet, ticked, pick_key))
+    # Notes, for the fullscreen table (where the page's own Notes button is out of sight): shown there only.
+    panel, noted = _panel_key(job_id, sheet), int((view.notes > 0).sum())
+    bar.button(f"Notes ({noted})" if noted else "Notes", icon=":material/forum:", key="table-notes",
+               on_click=_toggle_panel, args=(panel,), help="Show or hide the notes on your rows of this sheet")
     bar.space("stretch")
     bar.button("", icon=":material/fullscreen:", type="tertiary", key="table-fullscreen", help="Fullscreen")
     st.html(_FULLSCREEN, unsafe_allow_javascript=True)
