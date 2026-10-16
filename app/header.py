@@ -9,6 +9,7 @@ import streamlit as st
 APP_NAME = "ReqFill"
 BANNER_HEIGHT = "3.5rem"
 BANNER_COLOR = "#8B1538"
+PROGRESS_COLOR = "#7DB4F2"  # the theme blue (#3987e5), lighter
 
 # Streamlit's HTML sanitizer strips both inline <svg> and <img>, so the logo is drawn as a CSS
 # background image (stylesheets pass through untouched).
@@ -26,6 +27,8 @@ _CSS = f"""
     background: {BANNER_COLOR}; color: #fff;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
 }}
+/* Progress bars in a lighter shade of the theme blue. */
+[data-testid="stProgressBarTrack"] > div {{ background-color: {PROGRESS_COLOR}; }}
 .app-top-logo {{
     flex: 0 0 auto; display: block; width: 120px; height: 27px;
     background: url("{_LOGO_URI}") no-repeat center / contain;

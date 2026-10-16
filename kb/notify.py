@@ -1,6 +1,7 @@
 """Email SMEs about the rows assigned to them: newly assigned rows, or a reminder of the ones still open, with
 when they're due. Sent when the bid manager asks (Admin > Notifications), one email per SME per draft, linking
-to their task board.
+to their task board. And when an SME hands rows to another SME on the task board, that SME is emailed straight
+away (handoff_message).
 
 Two ways to send; the webhook wins when both are set:
 
@@ -100,6 +101,41 @@ def message(kind: str, person: str, email: str, draft_name: str, sheets: dict[st
         + (f"<ul>{''.join(f'<li>{escape(line)}</li>' for line in lines)}</ul>" if lines else "")
         + (f"<p><b>{escape(deadline)}</b></p>" if deadline else "")
         + (f'<p><a href="{escape(link)}">Open your task board</a></p>' if link
+           else "<p>Open ReqFill and pick your name on the task board.</p>")
+        + "<p style='color:#888'>Sent by ReqFill.</p>", subtype="html")
+    return msg
+
+
+def handoff_message(person: str, email: str, sender: str, job_id: str, draft_name: str, sheet: str,
+                    row_nums: list[int], note: str | None = None, due: date | None = None) -> EmailMessage:
+    """Sent as soon as an SME hands rows to `person` from their task board, with their note, linking to the sheet."""
+    count = len(row_nums)
+    rows = f"{count:,} row{'s' * (count != 1)}"
+    listed = ", ".join(map(str, sorted(row_nums)[:20])) + (" …" if count > 20 else "")
+    link = f"{BASE_URL}/tasks?{urlencode({'person': person, 'draft': job_id, 'sheet': sheet})}" if BASE_URL else None
+    deadline = due_text(due)
+    intro = f"{sender} handed you {rows} to review in {draft_name} ({sheet}): row{'s' * (count != 1)} {listed}."
+    intro_html = (f"<b>{escape(sender)}</b> handed you <b>{rows}</b> to review in <b>{escape(draft_name)}</b> "
+                  f"({escape(sheet)}): row{'s' * (count != 1)} {escape(listed)}.")
+
+    msg = EmailMessage()
+    msg["Subject"] = f"{sender} handed you {rows}: {draft_name}"
+    msg["To"] = email
+    if SENDER and not WEBHOOK_URL:
+        msg["From"] = SENDER
+    msg.set_content("\n".join([
+        f"Hi {person},", "", intro,
+        *(["", f"Their note: {note}"] if note else []),
+        *(["", deadline] if deadline else []), "",
+        f"Open the rows: {link}" if link else "Open ReqFill and pick your name on the task board.",
+        "", "Sent by ReqFill.",
+    ]))
+    msg.add_alternative(
+        f"<p>Hi {escape(person)},</p><p>{intro_html}</p>"
+        + (f"<p>Their note:</p><blockquote style='border-left:3px solid #ccc;margin:0;padding-left:10px'>"
+           f"{escape(note)}</blockquote>" if note else "")
+        + (f"<p><b>{escape(deadline)}</b></p>" if deadline else "")
+        + (f'<p><a href="{escape(link)}">Open the rows</a></p>' if link
            else "<p>Open ReqFill and pick your name on the task board.</p>")
         + "<p style='color:#888'>Sent by ReqFill.</p>", subtype="html")
     return msg

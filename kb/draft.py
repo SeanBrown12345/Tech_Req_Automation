@@ -1113,6 +1113,26 @@ def people(kind: str | None = None) -> list[str]:
         conn.close()
 
 
+def sme_email(name: str) -> str | None:
+    """An SME's email address; None for a partner, someone unknown or no address."""
+    conn = connect_drafts()
+    try:
+        row = conn.execute("SELECT email FROM people WHERE name = ? AND kind = ?", (name, SME)).fetchone()
+        return row[0] if row and row[0] else None
+    finally:
+        conn.close()
+
+
+def job_title(job_id: str) -> str:
+    """'Name — Client', as the task board shows drafts."""
+    conn = connect_drafts()
+    try:
+        name, client = conn.execute("SELECT name, client FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+        return f"{name} — {client}" if client else name
+    finally:
+        conn.close()
+
+
 def partners() -> dict[str, list[str]]:
     """Partner name -> the modules they cover."""
     conn = connect_drafts()

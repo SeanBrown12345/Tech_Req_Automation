@@ -44,7 +44,10 @@ settings-style page with Overview, Search and Add worksheet listed on the left.
 | `SMTP_STARTTLS` | `true` | `false` for a relay without TLS |
 | `REQFILL_BASE_URL` | - | The app's address (e.g. `https://<RFP Pilot URL>/ReqFill`), for the task-board link in emails |
 
-Assigning rows doesn't email anyone by itself. **Admin › Notifications** lists each SME's open rows per draft,
+Assigning rows from the draft page doesn't email anyone by itself. When an SME hands rows to another SME from
+their task board (**Reassign**), that SME is emailed straight away with the rows, the note if one was left, and a
+link to the sheet; if that can't be sent (no address, email not set up), the rows wait in Notifications as usual.
+**Admin › Notifications** lists each SME's open rows per draft,
 how many they haven't been emailed about and when they were last emailed. From there you set each SME's due
 date and send new-assignment emails or reminders (one email per SME per draft, with the due date and a link to
 their task board). Partners aren't emailed (they get the trimmed worksheet export).

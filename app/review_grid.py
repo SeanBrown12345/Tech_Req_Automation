@@ -13,8 +13,51 @@ from kb import draft, modules
 
 CONF_LABELS = {"high": "High", "medium": "Medium", "low": "Low"}
 RULE = "Needs comment"  # the grid's ⚠️ column
-# Rows with notes (rows loaded with draft.note_summary) are tinted; the table can only colour cells it doesn't edit.
-NOTE_TINT = "background-color: rgba(28, 131, 225, 0.35)"
+# Rows with notes (rows loaded with draft.note_summary) are tinted across the whole row. The table can only
+# colour cells it doesn't edit, so the tint is a see-through strip laid over each such row, following the table's
+# scrolling (clicks pass through it). Each table registers its tinted rows; one script draws them all.
+_NOTE_TINT = """<style>  /* this page code takes no space above the table */
+[class*="st-key-gridbox-"] [data-testid="stElementContainer"]:has(> [data-testid="stHtml"]) { display: none; }
+</style>
+<script>
+(window.reqfillTintSpecs = window.reqfillTintSpecs || {})["BOX"] = {rows: [ROWS], rowh: ROWH};
+if (!window.reqfillTint) {
+    window.reqfillTint = true;
+    const HEADER = 35, COLOR = "rgba(28, 131, 225, 0.28)";
+    const draw = () => {
+        for (const [id, spec] of Object.entries(window.reqfillTintSpecs)) {
+            const box = document.querySelector(".st-key-gridbox-" + id);
+            const scroller = box && box.querySelector(".dvn-scroller");
+            if (!scroller) continue;
+            const host = scroller.parentElement;
+            if (getComputedStyle(host).position === "static") host.style.position = "relative";
+            let layer = host.querySelector(":scope > .reqfill-tint-layer");
+            if (!layer) {
+                layer = document.createElement("div");
+                layer.className = "reqfill-tint-layer";
+                layer.style.cssText = "position:absolute;pointer-events:none;overflow:hidden;z-index:1";
+                host.appendChild(layer);
+            }
+            // Over the rows only: below the header, inside the scrollbars.
+            Object.assign(layer.style, {left: scroller.offsetLeft + "px", top: scroller.offsetTop + HEADER + "px",
+                                        width: scroller.clientWidth + "px", height: scroller.clientHeight - HEADER + "px"});
+            // Built with DOM calls: Streamlit doesn't run a script whose text holds HTML tags.
+            const sig = spec.rows.join(",") + "|" + spec.rowh + "|" + scroller.scrollTop;
+            if (layer.dataset.sig === sig) continue;
+            layer.dataset.sig = sig;
+            layer.replaceChildren(...spec.rows.map(i => {
+                const strip = document.createElement("div");
+                Object.assign(strip.style, {position: "absolute", left: "0", right: "0", height: spec.rowh + "px",
+                                            top: (i * spec.rowh - scroller.scrollTop) + "px", background: COLOR});
+                return strip;
+            }));
+        }
+    };
+    document.addEventListener("scroll", draw, true);
+    window.addEventListener("resize", draw);
+    setInterval(draw, 250);  // the table redraws on reruns, filters and fullscreen
+}
+</script>"""
 
 
 def name_or_none(value) -> str | None:
@@ -219,10 +262,11 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
                                  help="Make rows tall enough to show the whole requirement and written answers")
         written = [f["label"] for f in fields if f["kind"] not in ("choice", "marks")]
         row_height = _wrapped_row_height(frame[["Requirement", *written]].stack()) if wrap else 35
-        tinted = view.notes.values > 0 if noted else None
-        data = frame.style.apply(lambda col: [NOTE_TINT if t else "" for t in tinted],
-                                 subset=["Row", "Requirement", "Confidence"]) if noted and tinted.any() else frame
-        edited = st.data_editor(data, hide_index=True, width="stretch", column_config=config,
+        if noted:
+            tinted = [i for i, n in enumerate(view.notes.values) if n > 0]
+            st.html(_NOTE_TINT.replace("BOX", box).replace("ROWS", ",".join(map(str, tinted)))
+                    .replace("ROWH", str(row_height)), unsafe_allow_javascript=True)
+        edited = st.data_editor(frame, hide_index=True, width="stretch", column_config=config,
                                 height=height or min(760 if wrap else 520, 38 + (row_height + 1) * len(view)),
                                 row_height=row_height if wrap else None,
                                 column_order=[*(["Select"] if selectable else []), "Row",

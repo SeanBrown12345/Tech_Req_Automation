@@ -14,13 +14,43 @@ import streamlit as st
 from app import review_grid
 from app.admin_layout import ACCENT
 from app.common import card_styles, status_badge
-from kb import db, draft
+from app.header import BANNER_COLOR
+from kb import db, draft, notify
+
+MAROON = BANNER_COLOR
+MAROON_HOVER = "#A3214A"
+MAROON_LIGHT = "#C8456A"  # outlines
+MAROON_TEXT = "#F0A3BA"  # text on the dark page
 
 st.html(f"""<style>
 [data-testid='stMainBlockContainer'] {{ max-width: 1200px; margin: 0 auto; }}
 [data-testid="stMain"] [data-testid="stHeading"] h1 {{
     padding-bottom: 0.6rem; border-bottom: 1px solid rgba(128, 128, 128, 0.25); margin-bottom: 0.5rem;
 }}
+/* The task board's buttons take the banner's maroon in place of the theme blue: filled buttons in the maroon,
+   outlines and text in a lighter shade that reads on the dark page. */
+[data-testid="stBaseButton-primary"] {{ background: {MAROON}; border-color: {MAROON}; color: #fff; }}
+[data-testid="stBaseButton-primary"]:hover {{ background: {MAROON_HOVER}; border-color: {MAROON_HOVER}; color: #fff; }}
+[data-testid="stBaseButton-primary"]:active, [data-testid="stBaseButton-primary"]:focus {{ color: #fff; }}
+[data-testid="stBaseButton-secondary"]:hover, [data-testid="stPopoverButton"]:hover {{
+    border-color: {MAROON_LIGHT}; color: {MAROON_LIGHT};
+}}
+[data-testid="stBaseButton-tertiary"]:hover {{ color: {MAROON_LIGHT}; }}
+[data-testid="stButtonGroup"] button[aria-checked="true"] {{  /* Streamlit's own rule for it is more specific */
+    background: {MAROON} !important; border-color: {MAROON} !important; color: #fff !important;
+}}
+[data-testid="stButtonGroup"] button:hover {{ border-color: {MAROON} !important; }}
+[data-testid="stButtonGroup"] button[aria-checked="true"] * {{ color: #fff !important; }}
+button:focus-visible {{ box-shadow: 0 0 0 0.2rem rgba(200, 69, 106, 0.5) !important; }}
+/* Notes sits beside the Row by row | Table switch, at its height. */
+[class*="st-key-notes-panel-"] button {{ min-height: 32px; height: 32px; padding-top: 0; padding-bottom: 0; }}
+/* Except Notes when something waits on you: blue, as the rows with notes are. */
+[class*="st-key-notes-panel-"] [data-testid="stBaseButton-primary"] {{ background: #3987e5; border-color: #3987e5; }}
+[class*="st-key-notes-panel-"] [data-testid="stBaseButton-primary"]:hover {{ background: #5A9CEB; border-color: #5A9CEB; }}
+/* Open on each person's card: white with dark text. */
+[class*="st-key-open-"] button {{ background: #ffffff; color: #16181D; border-color: #ffffff; }}
+[class*="st-key-open-"] button:hover {{ background: #E6E8EC; color: #16181D; border-color: #E6E8EC; }}
+[class*="st-key-open-"] button:active, [class*="st-key-open-"] button:focus {{ color: #16181D; }}
 /* The requirement under review stands out from the rest of the page. */
 .st-key-rv-requirement {{ border-left: 4px solid {ACCENT}; padding-left: 1rem; }}
 .st-key-rv-requirement p {{ font-size: 1.15rem; line-height: 1.5; }}
@@ -174,7 +204,9 @@ def person_view(rows: pd.DataFrame, person: str) -> None:
     st.caption("Your assigned sheets. **Review** takes you through the rows one at a time, in sheet order. "
                "**Review in table** shows them all at once.")
     dues = draft.due_dates(person)
-    for (job_id, sheet), view in mine.groupby(["job_id", "sheet"], sort=False):
+    # Sheets with rows still to review first, finished ones (every row approved) below; newest draft first in each.
+    sheets = sorted(mine.groupby(["job_id", "sheet"], sort=False), key=lambda g: bool(g[1].reviewed.all()))
+    for (job_id, sheet), view in sheets:
         _, multi = _sheet_plan(view, sheet)
         c = _counts(view)
         with st.container(border=True):
@@ -349,6 +381,30 @@ def _flag(job_id: str, sheet: str, row_num: int) -> None:
 UNASSIGN = "Unassign (return to the pool)"
 
 
+def _email_handoff(person: str, to: str, job_id: str, sheet: str, row_nums: list[int], note: str) -> str:
+    """Email the SME the rows were handed to, straight away, with the note. Partners aren't emailed (they get
+    the trimmed worksheet). Returns a sentence for the toast; rows that couldn't be emailed stay pending in
+    Admin › Notifications."""
+    if to in draft.partners():
+        return ""
+    later = " It can be sent from Admin › Notifications."
+    if not notify.configured():
+        return f" Email isn't set up, so {to} wasn't emailed."
+    if not (email := draft.sme_email(to)):
+        return f" {to} has no email address, so wasn't emailed." + later
+    due = draft.due_dates(to).get(job_id)
+    msg = notify.handoff_message(to, email, person, job_id, draft.job_title(job_id), sheet, row_nums, note or None,
+                                 date.fromisoformat(due) if due else None)
+    try:
+        failed = notify.send([msg])
+    except notify.SEND_ERRORS as e:
+        failed = {0: str(e)}
+    if failed:
+        return f" The email to {to} didn't send ({failed[0][:80]})." + later
+    draft.record_email(job_id, to, notify.NEW, [(sheet, n) for n in row_nums])
+    return f" {to} was emailed."
+
+
 def _reassign(person: str, job_id: str, sheet: str, row_num: int, fields: list[dict], answers: dict) -> None:
     """Give the row to someone else, or return it to the pool as not this person's (keeping any edits).
     It leaves this review either way, so the next row shows."""
@@ -361,7 +417,8 @@ def _reassign(person: str, job_id: str, sheet: str, row_num: int, fields: list[d
         st.session_state.review_notice = f"Row {row_num} went back to the pool."
     else:
         draft.assign(job_id, sheet, [row_num], to)
-        st.session_state.review_notice = f"Row {row_num} handed to {to}."
+        st.session_state.review_notice = (f"Row {row_num} handed to {to}."
+                                          + _email_handoff(person, to, job_id, sheet, [row_num], note))
 
 
 MODES = {"Row by row": None, "Table": "table"}
@@ -430,6 +487,9 @@ _NOTE_CARDS = f"""<style>
 [class*="st-key-notecard-"] [data-testid="stPopover"] {{ position: relative; z-index: 2; }}
 [class*="st-key-notemenu-"] button {{ border: none; background: transparent; padding: 0 0.25rem; min-height: 0; }}
 [class*="st-key-notemenu-"] button div[aria-hidden="true"] {{ display: none; }}  /* the popover's chevron */
+/* The ⋮ menu opens outside the card, so it's found by its Resolve button: a small menu, not a padded box. */
+[data-testid="stPopoverBody"]:has([class*="st-key-resolve"]) {{ padding: 0.25rem; min-width: 0; width: auto; }}
+[data-testid="stPopoverBody"] [class*="st-key-resolve"] button {{ padding: 0.3rem 0.6rem; min-height: 0; }}
 [class*="st-key-notecard-"] [data-testid="stChatInput"] {{ position: relative; z-index: 2; }}
 [class*="st-key-notecard-"] p {{ font-size: 0.875rem; }}  /* the Row line, as the thread's text */
 </style>"""
@@ -704,7 +764,8 @@ def _reassign_rows(person: str, job_id: str, sheet: str, row_nums: list[int], ke
         st.session_state.review_notice = f"{len(row_nums):,} row{'s' * (len(row_nums) != 1)} went back to the pool."
     else:
         draft.assign(job_id, sheet, row_nums, to)
-        st.session_state.review_notice = f"{len(row_nums):,} row{'s' * (len(row_nums) != 1)} handed to {to}."
+        st.session_state.review_notice = (f"{len(row_nums):,} row{'s' * (len(row_nums) != 1)} handed to {to}."
+                                          + _email_handoff(person, to, job_id, sheet, row_nums, note))
     st.session_state.pop(key, None)  # the picker starts empty next time
     review_grid.refresh()  # and the table's ticks start clear
 
