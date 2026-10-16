@@ -54,7 +54,7 @@ button:focus-visible {{ box-shadow: 0 0 0 0.2rem rgba(200, 69, 106, 0.5) !import
 /* The requirement under review stands out from the rest of the page. */
 .st-key-rv-requirement {{ border-left: 4px solid {ACCENT}; padding-left: 1rem; }}
 .st-key-rv-requirement p {{ font-size: 1.15rem; line-height: 1.5; }}
-/* Back (to drafting, or to all people): an arrow in the left margin, level with the page title, taking no space in the flow. */
+/* Back (home, or to all people): an arrow in the left margin, level with the page title, taking no space in the flow. */
 [data-testid="stElementContainer"]:has(> .st-key-board-back), .st-key-board-back {{ height: 0; margin: 0; }}
 .st-key-board-back {{ position: relative; overflow: visible; }}
 .st-key-board-back button {{ position: absolute; left: -3rem; top: 2.6rem; font-size: 1.5rem; }}
@@ -135,8 +135,8 @@ def _cards(assigned: pd.DataFrame, partner: bool) -> None:
 
 def people_list(rows: pd.DataFrame) -> None:
     with st.container(key="board-back"):
-        if st.button("", icon=":material/arrow_back:", type="tertiary", help="Back to drafting"):
-            st.switch_page("views/draft_worksheet.py")
+        if st.button("", icon=":material/arrow_back:", type="tertiary", help="Home"):
+            st.switch_page("views/home.py")
     st.title("Task board")
     assigned = rows[rows.who.notna()]
     if assigned.empty:

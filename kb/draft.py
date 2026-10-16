@@ -1051,6 +1051,26 @@ def sme_workload() -> "pd.DataFrame":
         conn.close()
 
 
+def job_progress() -> "pd.DataFrame":
+    """One line per draft, newest first: job_id, name, client, created_at, status, rows (drafted), approved,
+    assigned_open (assigned and not yet approved)."""
+    conn = connect_drafts()
+    try:
+        df = db.read_sql(conn, """
+            SELECT j.job_id, j.name, j.client, j.created_at, j.status,
+                   COUNT(r.row_num) AS rows,
+                   COUNT(CASE WHEN r.reviewed = 1 THEN 1 END) AS approved,
+                   COUNT(CASE WHEN r.reviewed = 0 AND r.assignee IS NOT NULL THEN 1 END) AS assigned_open
+            FROM jobs j LEFT JOIN rows r ON r.job_id = j.job_id AND r.ai IS NOT NULL
+            GROUP BY j.job_id, j.name, j.client, j.created_at, j.status
+            ORDER BY j.created_at DESC""")
+    finally:
+        conn.close()
+    for col in ("rows", "approved", "assigned_open"):
+        df[col] = df[col].astype(int)
+    return df
+
+
 def open_rows(job_id: str, person: str) -> "pd.DataFrame":
     """The person's open rows in a draft: sheet, row_num, new (not yet emailed about them)."""
     conn = connect_drafts()

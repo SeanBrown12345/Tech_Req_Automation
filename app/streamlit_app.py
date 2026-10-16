@@ -15,7 +15,8 @@ from app.header import APP_NAME, render_header  # noqa: E402
 st.set_page_config(page_title=APP_NAME, page_icon=str(Path(__file__).parent / "assets" / "favicon.png"), layout="wide")
 
 views = Path(__file__).parent / "views"
-draft = st.Page(views / "draft_worksheet.py", title="Draft a worksheet", icon=":material/edit_note:", default=True)
+home = st.Page(views / "home.py", title="Home", icon=":material/home:", default=True)
+draft = st.Page(views / "draft_worksheet.py", title="Draft a worksheet", icon=":material/edit_note:", url_path="draft")
 board = st.Page(views / "task_board.py", title="Task board", icon=":material/assignment_ind:", url_path="tasks")
 # Admin, reached from the gear in the header: the knowledge base, and the team that reviews drafts.
 kb_admin = [
@@ -31,9 +32,9 @@ review_admin = [
     st.Page(views / "module_list.py", title="Modules", icon=":material/category:", url_path="modules"),
 ]
 admin = kb_admin + review_admin
-page = st.navigation([draft, board, *admin], position="hidden")
+page = st.navigation([home, draft, board, *admin], position="hidden")
 in_admin = page.url_path in {p.url_path for p in admin}
-render_header(draft, board, admin[0], in_admin)
+render_header(home, draft, board, admin[0], in_admin)
 
 # No sidebar anywhere: admin navigation lives in the page itself (see admin_layout).
 st.html("<style>section[data-testid='stSidebar'], [data-testid='stExpandSidebarButton'],"
