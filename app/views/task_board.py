@@ -143,13 +143,19 @@ def _replies(rows: pd.DataFrame, person: str) -> None:
     waiting = rows[noted & (rows.who != person) & rows.last_by.notna() & (rows.last_by != person)]
     if waiting.empty:
         return
-    with st.container(border=True):
-        st.markdown(f"#### :material/forum: Replies on rows you handed on ({len(waiting)})")
-        st.caption("These rows aren't yours any more, but someone has written since your note. Answer here.")
+    st.html("""<style>
+.st-key-replies { padding: 0.6rem 0.9rem; gap: 0.4rem; }
+.st-key-replies [data-testid="stExpander"] summary { padding-top: 0.35rem; padding-bottom: 0.35rem; font-size: 0.9rem; }
+.st-key-replies [data-testid="stExpanderDetails"] { padding-top: 0.25rem; padding-bottom: 0.5rem; }
+</style>""")
+    with st.container(border=True, key="replies"):
+        st.markdown(f"**:material/forum: Replies on rows you handed on ({len(waiting)})**",
+                    help="These rows aren't yours any more, but someone has written since your note. Answer here.")
         for r in waiting.itertuples():
-            holder = f"with {r.who}" if r.who else "back in the pool"
-            with st.expander(f"{r.draft} · {r.sheet} · Row {r.row_num} ({holder}): {r.requirement[:70]}"):
-                review_grid.thread(r.job_id, r.sheet, int(r.row_num), person, key="replies")
+            holder = r.who or "the pool"
+            with st.expander(f"Row {r.row_num} · {r.draft}{f' · {r.sheet}' if r.sheet else ''} · now with {holder}"):
+                st.caption(r.requirement if len(r.requirement) <= 160 else r.requirement[:157] + "…")
+                review_grid.thread(r.job_id, r.sheet, int(r.row_num), person, key="replies", compact=True)
 
 
 def person_view(rows: pd.DataFrame, person: str) -> None:
