@@ -3,6 +3,7 @@ are edited in place and saved row by row as they change, so several SMEs can wor
 
 import hashlib
 import json
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -12,6 +13,8 @@ from kb import draft, modules
 
 CONF_LABELS = {"high": "High", "medium": "Medium", "low": "Low"}
 RULE = "Needs comment"  # the grid's ⚠️ column
+# Rows with notes (rows loaded with draft.note_summary) are tinted; the table can only colour cells it doesn't edit.
+NOTE_TINT = "background-color: rgba(28, 131, 225, 0.35)"
 
 
 def name_or_none(value) -> str | None:
@@ -162,6 +165,7 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
     # Responses the worksheet wants a comment with (see draft.required_comment): a narrow last column marks
     # every such row, and its header's tooltip says what each response's comment must include.
     rules = draft.comment_field(sheet_plan) is not None and any(f.get("requires") for f in fields)
+    noted = "notes" in view.columns
     frame = pd.DataFrame({
         **({"Select": [st.session_state.get(f"select_all:{key}", False)] * len(view)} if selectable else {}),
         "Row": view.row_num.values,
@@ -182,7 +186,8 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
     config = {
         "Select": st.column_config.CheckboxColumn("", width=40, help="Tick rows to assign them or set their module"),
         "Row": st.column_config.NumberColumn(width="small"),
-        "Requirement": st.column_config.TextColumn(width="large"),
+        "Requirement": st.column_config.TextColumn(width="large", help="Rows highlighted blue have notes: open the "
+                                                   "**Notes** panel to read them" if noted else None),
         "Confidence": st.column_config.TextColumn(width="small"),
         RULE: st.column_config.TextColumn("⚠️", width=28, help="The worksheet requires a comment with this "
                                           "response; the row can't be approved without one.\n\n" + "\n\n".join(
@@ -214,10 +219,14 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
                                  help="Make rows tall enough to show the whole requirement and written answers")
         written = [f["label"] for f in fields if f["kind"] not in ("choice", "marks")]
         row_height = _wrapped_row_height(frame[["Requirement", *written]].stack()) if wrap else 35
-        edited = st.data_editor(frame, hide_index=True, width="stretch", column_config=config,
+        tinted = view.notes.values > 0 if noted else None
+        data = frame.style.apply(lambda col: [NOTE_TINT if t else "" for t in tinted],
+                                 subset=["Row", "Requirement", "Confidence"]) if noted and tinted.any() else frame
+        edited = st.data_editor(data, hide_index=True, width="stretch", column_config=config,
                                 height=height or min(760 if wrap else 520, 38 + (row_height + 1) * len(view)),
                                 row_height=row_height if wrap else None,
-                                column_order=[*(["Select"] if selectable else []), "Row", "Requirement",
+                                column_order=[*(["Select"] if selectable else []), "Row",
+                                              "Requirement",
                                               *[f["label"] for f in fields],
                                               "Confidence", "Cost", "Approved", *([RULE] if rules else [])]
                                 if reviewer else None,
@@ -259,11 +268,62 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
     return edited.loc[edited.Select, "Row"].astype(int).tolist() if selectable else []
 
 
-def details(view: pd.DataFrame, key: str) -> None:
-    """Pick a row and see why the AI answered it as it did."""
+def _post_note(job_id: str, sheet: str, row_num: int, author: str, key: str) -> None:
+    draft.add_note(job_id, sheet, [row_num], author, st.session_state.get(key) or "")
+    st.session_state[key] = ""  # the box starts empty for the next message
+
+
+def _reply(job_id: str, sheet: str, row_num: int, author: str, key: str) -> None:
+    draft.add_note(job_id, sheet, [row_num], author, st.session_state.get(key) or "")
+
+
+# Compact threads: small text, tight spacing and a slim one-line reply box.
+_COMPACT = """<style>
+[class*="st-key-thread-"] p { font-size: 0.875rem; line-height: 1.4; }
+[class*="st-key-thread-"] [data-testid="stChatInput"] > div { min-height: 0; padding: 0.1rem 0.25rem 0.1rem 0.5rem; }
+[class*="st-key-thread-"] [data-testid="stChatInput"] textarea {
+    min-height: 0 !important; height: 1.9rem !important; padding: 0.3rem 0.25rem; font-size: 0.85rem; line-height: 1.3;
+}
+[class*="st-key-thread-"] [data-testid="stChatInput"] button { width: 1.6rem; height: 1.6rem; min-height: 0; }
+</style>"""
+
+
+def thread(job_id: str, sheet: str, row_num: int, author: str | None, key: str, compact: bool = False) -> None:
+    """The messages left on a row, oldest first, and a box to add one as `author` (None = read only).
+    `compact` (the notes panel, the row view): each message as a name line and its text, and a one-line reply
+    sent with Enter."""
+    if compact:
+        st.html(_COMPACT)
+        with st.container(gap="small", key=f"thread-{key}-{row_num}"):
+            for n in draft.notes(job_id, sheet, row_num).itertuples():
+                when = datetime.fromisoformat(n.created_at).astimezone()
+                st.markdown(f":gray[**{n.author}** · {when.day} {when:%b %H:%M}]  \n{n.body}")
+            if author:
+                box = f"note:{key}:{job_id}:{sheet}:{row_num}"
+                # A chat input sends only on Enter (a text box would also send when it loses focus) and clears itself.
+                st.chat_input("Reply (Enter to send)", key=box, on_submit=_reply,
+                              args=(job_id, sheet, row_num, author, box))
+        return
+    for n in draft.notes(job_id, sheet, row_num).itertuples():
+        when = datetime.fromisoformat(n.created_at).astimezone()
+        with st.chat_message("user" if n.author == author else "assistant",
+                             avatar=":material/person:" if n.author == author else ":material/forum:"):
+            st.caption(f"**{n.author}** · {when.day} {when:%b %H:%M}")
+            st.markdown(n.body)
+    if author:
+        box = f"note:{key}:{job_id}:{sheet}:{row_num}"
+        st.text_area("New note", key=box, height=80, placeholder="Ask a question or leave a note for whoever has "
+                     "this row next", label_visibility="collapsed")
+        st.button("Send", icon=":material/send:", key=f"{box}:send", on_click=_post_note, args=(job_id, sheet, row_num, author, box))
+
+
+def details(view: pd.DataFrame, key: str, author: str | None = None) -> None:
+    """Pick a row and see why the AI answered it as it did, and the notes left on it (`author` can add one)."""
+    by_row = view.set_index("row_num")
+    noted = set(by_row.index[by_row.notes > 0]) if "notes" in by_row else set()
     pick = st.selectbox("Row", view.row_num.tolist(), key=f"why:{key}",
-                        format_func=lambda n: f"Row {n}: {view.set_index('row_num').loc[n, 'requirement'][:80]}")
-    r = view.set_index("row_num").loc[pick]
+                        format_func=lambda n: f"{'💬 ' * (n in noted)}Row {n}: {by_row.loc[n, 'requirement'][:80]}")
+    r = by_row.loc[pick]
     with st.container(border=True):  # the full requirement; the picker only shows its start
         if isinstance(r.parent_text, str) and r.parent_text:
             st.caption(f"Under: {r.parent_text}")
@@ -272,6 +332,8 @@ def details(view: pd.DataFrame, key: str) -> None:
     with h1:
         status_badge(r.status)
     h2.caption(confidence_note(r))
+    st.markdown("**Notes**")
+    thread(r.job_id, r.sheet, int(pick), author, key=key)
     evidence(r)
 
 

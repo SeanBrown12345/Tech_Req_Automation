@@ -555,7 +555,7 @@ def _job_page(job_id: str):
     # ---- Answer details ----
     with st.container(border=True, key="card-answer"):
         st.subheader("Answer details")
-        review_grid.details(view, key=f"{job_id}:{sheet}")
+        review_grid.details(view, key=f"{job_id}:{sheet}", author=draft.BID_MANAGER)
 
 if choice == NEW:
     new_draft()

@@ -257,6 +257,17 @@ CREATE TABLE IF NOT EXISTS notices (
     emailed_kind TEXT,                  -- new (assignments) | reminder
     PRIMARY KEY (job_id, person)
 );
+CREATE TABLE IF NOT EXISTS row_notes (  -- messages about a row between whoever handles it (see add_note)
+    job_id       TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
+    sheet        TEXT NOT NULL,
+    row_num      INTEGER NOT NULL,
+    author       TEXT NOT NULL,         -- people.name, or BID_MANAGER from the draft page
+    body         TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    resolved_at  TEXT,                  -- the conversation was marked resolved; a new note opens the row again
+    resolved_by  TEXT
+);
+CREATE INDEX IF NOT EXISTS row_notes_row ON row_notes (job_id, sheet, row_num);
 """
 
 
@@ -267,6 +278,7 @@ _ADDED_COLUMNS = {
              "partner_status": "TEXT", "sent_at": "TEXT", "received_at": "TEXT", "approved_by": "TEXT",
              "notified": "TEXT"},
     "people": {"kind": "TEXT NOT NULL DEFAULT 'sme'", "modules": "TEXT"},
+    "row_notes": {"resolved_at": "TEXT", "resolved_by": "TEXT"},
 }
 
 _drafts_ready = False  # Postgres: tables created once per process
@@ -961,6 +973,62 @@ def return_row(job_id: str, sheet: str, row_num: int, by: str, note: str | None 
     conn.close()
 
 
+BID_MANAGER = "Bid manager"  # author of notes written on the draft page, which has no person
+
+
+def add_note(job_id: str, sheet: str, row_nums: list[int], author: str, body: str) -> None:
+    """Leave a message on rows, e.g. why they're handed on or a question for whoever has them."""
+    if not (body := body.strip()):
+        return
+    # To the microsecond: notes are ordered by it, and a quick reply mustn't tie with the note before it.
+    now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    conn = connect_drafts()
+    with conn:
+        conn.executemany("INSERT INTO row_notes (job_id, sheet, row_num, author, body, created_at)"
+                         " VALUES (?, ?, ?, ?, ?, ?)", [(job_id, sheet, int(n), author, body, now) for n in row_nums])
+    conn.close()
+
+
+def notes(job_id: str | None = None, sheet: str | None = None, row_num: int | None = None) -> "pd.DataFrame":
+    """Messages, oldest first, for every draft or narrowed to a draft, sheet and row: job_id, sheet,
+    row_num, author, body, created_at."""
+    where = [(c, v) for c, v in (("job_id", job_id), ("sheet", sheet), ("row_num", row_num)) if v is not None]
+    conn = connect_drafts()
+    try:
+        return db.read_sql(conn, "SELECT job_id, sheet, row_num, author, body, created_at FROM row_notes"
+                           + (" WHERE " + " AND ".join(f"{c} = ?" for c, _ in where) if where else "")
+                           + " ORDER BY created_at", [v if c != "row_num" else int(v) for c, v in where])
+    finally:
+        conn.close()
+
+
+def resolve_notes(job_id: str, sheet: str, row_num: int, by: str) -> None:
+    """Close a row's conversation: its notes stay as history, but it no longer counts as having notes."""
+    conn = connect_drafts()
+    with conn:
+        conn.execute("UPDATE row_notes SET resolved_at = ?, resolved_by = ? WHERE job_id = ? AND sheet = ?"
+                     " AND row_num = ? AND resolved_at IS NULL", (_now(), by, job_id, sheet, int(row_num)))
+    conn.close()
+
+
+def note_summary() -> "pd.DataFrame":
+    """Per row with messages: job_id, sheet, row_num, notes (how many aren't resolved), all_notes, last_by and
+    last_note (who wrote the latest and what it says)."""
+    conn = connect_drafts()
+    try:
+        return db.read_sql(conn, """
+            SELECT job_id, sheet, row_num, notes, all_notes, author AS last_by, body AS last_note FROM (
+                SELECT job_id, sheet, row_num, author, body,
+                       COUNT(CASE WHEN resolved_at IS NULL THEN 1 END)
+                           OVER (PARTITION BY job_id, sheet, row_num) AS notes,
+                       COUNT(*) OVER (PARTITION BY job_id, sheet, row_num) AS all_notes,
+                       ROW_NUMBER() OVER (PARTITION BY job_id, sheet, row_num ORDER BY created_at DESC) AS newest
+                FROM row_notes) n
+            WHERE newest = 1""")
+    finally:
+        conn.close()
+
+
 def sme_workload() -> "pd.DataFrame":
     """One line per SME per draft they have open rows in (partners aren't emailed): person, email, job_id,
     draft_name, client, open, new (open rows they haven't been emailed about), due, emailed_at, emailed_kind."""
@@ -1103,6 +1171,7 @@ def update_person(old_name: str, name: str, email: str | None, areas: str | None
                 conn.execute("UPDATE rows SET returned_by = ? WHERE returned_by = ?", (name, old_name))
                 conn.execute("UPDATE rows SET notified = ? WHERE notified = ?", (name, old_name))
                 conn.execute("UPDATE notices SET person = ? WHERE person = ?", (name, old_name))
+                conn.execute("UPDATE row_notes SET author = ? WHERE author = ?", (name, old_name))
         return True
     finally:
         conn.close()
@@ -1129,6 +1198,7 @@ def delete_job(job_id: str) -> None:
     with conn:
         conn.execute("DELETE FROM rows WHERE job_id = ?", (job_id,))
         conn.execute("DELETE FROM notices WHERE job_id = ?", (job_id,))
+        conn.execute("DELETE FROM row_notes WHERE job_id = ?", (job_id,))
         conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
     conn.close()
     workbook_path(job_id).unlink(missing_ok=True)
