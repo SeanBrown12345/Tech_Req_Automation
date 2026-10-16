@@ -561,6 +561,8 @@ def _notes_pane(person: str, job_id: str, sheet: str, view: pd.DataFrame, mode: 
 def _switch_mode(person: str, job_id: str, sheet: str, key: str) -> None:
     if (picked := st.session_state[key]) is not None:  # clicking the current mode again leaves it as it is
         _new_view()
+        if MODES[picked] is None:  # into row by row: start afresh at the first row not approved (the table may
+            st.session_state.pop("review", None)  # have approved some of the earlier review's rows)
         _go(person=person, draft=job_id, sheet=sheet, mode=MODES[picked])
 
 

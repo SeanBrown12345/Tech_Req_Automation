@@ -198,9 +198,9 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
     each row back, for rows SMEs unassigned. `selectable` adds a Select tick box per row; the ticked
     row numbers are returned (ticking isn't an edit, nothing is saved). `reviewer` is the SME's own
     view on the task board: Row, Requirement, the answers, Confidence, Needs pricing and Approved only,
-    with a narrative/comments answer column titled just "Comments". `wrap` wraps long text in taller rows;
-    left as None, the grid offers its own Wrap text toggle in fullscreen only. The height fits the rows,
-    up to 520px, unless given."""
+    with a narrative/comments answer column titled just "Comments" and Confidence titled "AI Confidence".
+    `wrap` wraps long text in taller rows; left as None, the grid offers its own Wrap text toggle in
+    fullscreen only. The height fits the rows, up to 520px, unless given."""
     sheet = sheet_plan["name"]
     module_names = modules.names() if modules.load() else []
     fields = [f for f in sheet_plan["fields"] if f.get("include", True)]
@@ -231,7 +231,7 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
         "Row": st.column_config.NumberColumn(width="small"),
         "Requirement": st.column_config.TextColumn(width="large", help="Rows highlighted blue have notes: open the "
                                                    "**Notes** panel to read them" if noted else None),
-        "Confidence": st.column_config.TextColumn(width="small"),
+        "Confidence": st.column_config.TextColumn("AI Confidence" if reviewer else None, width="small"),
         RULE: st.column_config.TextColumn("⚠️", width=28, help="The worksheet requires a comment with this "
                                           "response; the row can't be approved without one.\n\n" + "\n\n".join(
             f"**{o}**: {n}" for f in fields for o, n in (f.get("requires") or {}).items())),
