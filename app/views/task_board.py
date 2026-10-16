@@ -750,8 +750,9 @@ def _table_review(person: str, job_id: str, sheet: str, view: pd.DataFrame, shee
     if (jump := st.session_state.get("notes_jump")) and jump["row"] in set(shown.row_num):
         st.html(_JUMP.replace("NONCE", str(jump["n"])).replace("INDEX", str(list(shown.row_num).index(jump["row"])))
                 .replace("COUNT", str(len(shown))), unsafe_allow_javascript=True)
-    st.markdown("**Answer details**")
-    review_grid.details(shown, key=key, author=person)
+    with st.container(border=True, key="card-answer"):  # as on the draft page
+        st.subheader("Answer details")
+        review_grid.details(shown, key=key, notes=False)
 
 
 # =================================================================================================
