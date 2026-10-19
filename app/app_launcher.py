@@ -54,13 +54,14 @@ def css() -> str:
     return """
 .app-launcher { position: relative; flex: 0 0 auto; margin-left: -.5rem; }
 .app-launcher-btn {
-  display: block; width: 2.5rem; height: 2.5rem; padding: 0; margin: 0; border: 0; border-radius: 50%;
+  display: block; width: 2.5rem; height: 2.5rem; padding: 0; margin: 0; border: 0; border-radius: 6px;
   cursor: pointer; background: transparent url("__GRID__") no-repeat center / 1.5rem;
-  transition: background-color .15s;
+  transition: filter .15s;
 }
-.app-launcher-btn:hover, .app-launcher:focus-within .app-launcher-btn { background-color: rgba(255,255,255,.18); }
+/* Hover / open: the dots themselves darken, no background behind them. */
+.app-launcher-btn:hover, .app-launcher:focus-within .app-launcher-btn { filter: brightness(.75); }
 .app-launcher-btn:focus { outline: none; }
-.app-launcher-btn:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+.app-launcher-btn:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
 /* The panel. Hiding waits out the fade (visibility delay), so a click on a link still lands even in
    browsers that don't move focus to a clicked link. */
 .app-launcher-menu {
@@ -80,9 +81,9 @@ def css() -> str:
   padding: .85rem .25rem .7rem; border-radius: .9rem;
   color: #202124 !important; text-decoration: none !important; opacity: 1;
   font-family: inherit; font-size: .8rem; font-weight: 500; line-height: 1.2; white-space: nowrap;
-  transition: background-color .12s;
 }
-.app-launcher-menu a:hover, .app-launcher-menu a:focus-visible { background: #F1F3F4; outline: none; }
+.app-launcher-menu a:focus { outline: none; }
+.app-launcher-menu a:focus-visible { outline: 2px solid #8B1538; outline-offset: -2px; }
 .app-launcher-menu a.current { background: #F9EBEF; }
 /* Dark panel, for the apps with a dark theme. */
 .app-launcher.dark .app-launcher-menu {
@@ -91,14 +92,14 @@ def css() -> str:
 .app-launcher.dark .app-launcher-menu a, .app-launcher.dark .app-launcher-menu a:link,
 .app-launcher.dark .app-launcher-menu a:visited, .app-launcher.dark .app-launcher-menu a:hover,
 .app-launcher.dark .app-launcher-menu a:active { color: #E6E8EB !important; }
-.app-launcher.dark .app-launcher-menu a:hover, .app-launcher.dark .app-launcher-menu a:focus-visible {
-  background: #2C313A;
-}
+.app-launcher.dark .app-launcher-menu a:focus-visible { outline-color: #E6E8EB; }
 .app-launcher.dark .app-launcher-menu a.current { background: rgba(139,21,56,.35); }
 .app-launcher-icon {
   display: block; width: 3rem; height: 3rem; border-radius: .7rem;
-  background: no-repeat center / contain;
+  background: no-repeat center / contain; transition: filter .12s;
 }
+/* Hover: the app's icon darkens, no background behind the tile. */
+.app-launcher-menu a:hover .app-launcher-icon { filter: brightness(.75); }
 """.replace("__GRID__", _data_uri(_GRID_SVG.encode(), "image/svg+xml")) + icons
 
 
