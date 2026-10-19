@@ -361,13 +361,12 @@ def thread(job_id: str, sheet: str, row_num: int, author: str | None, key: str, 
         st.button("Send", icon=":material/send:", key=f"{box}:send", on_click=_post_note, args=(job_id, sheet, row_num, author, box))
 
 
-def details(view: pd.DataFrame, key: str, author: str | None = None, notes: bool = True) -> None:
-    """Pick a row and see why the AI answered it as it did, and (`notes`) the notes left on it, which `author`
-    can add to. The task board's table leaves notes out: they're in its Notes panel."""
+def details(view: pd.DataFrame, key: str) -> None:
+    """Pick a row and see why the AI answered it as it did. Notes are left out: the task board has them in
+    its Notes panel."""
     by_row = view.set_index("row_num")
-    noted = set(by_row.index[by_row.notes > 0]) if notes and "notes" in by_row else set()
     pick = st.selectbox("Row", view.row_num.tolist(), key=f"why:{key}",
-                        format_func=lambda n: f"{'💬 ' * (n in noted)}Row {n}: {by_row.loc[n, 'requirement'][:80]}")
+                        format_func=lambda n: f"Row {n}: {by_row.loc[n, 'requirement'][:80]}")
     r = by_row.loc[pick]
     with st.container(border=True):  # the full requirement; the picker only shows its start
         if isinstance(r.parent_text, str) and r.parent_text:
@@ -377,9 +376,6 @@ def details(view: pd.DataFrame, key: str, author: str | None = None, notes: bool
     with h1:
         status_badge(r.status)
     h2.caption(confidence_note(r))
-    if notes:
-        st.markdown("**Notes**")
-        thread(r.job_id, r.sheet, int(pick), author, key=key)
     evidence(r)
 
 
