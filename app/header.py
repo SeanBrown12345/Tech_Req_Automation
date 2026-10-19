@@ -1,10 +1,12 @@
-"""Top banner shared with our other apps: company logo (links home), separator, app name, and on the
+"""Top banner shared with our other apps: app launcher, company logo (links home), separator, app name, and on the
 right links to drafting and the task board, and a gear that opens the knowledge-base admin pages."""
 
 import base64
 from pathlib import Path
 
 import streamlit as st
+
+from app import app_launcher
 
 APP_NAME = "ReqFill"
 BANNER_HEIGHT = "3.5rem"
@@ -37,6 +39,8 @@ _CSS = f"""
     flex: 0 0 auto; width: 1px; height: 1.6rem; margin: 0 0.9rem;
     background: rgba(255, 255, 255, 0.55);
 }}
+/* The banner has no gap, so space the app launcher from the logo here. */
+.app-top-banner .app-launcher {{ margin-right: .85rem; }}
 .app-top-title {{
     font-size: 1.15rem; font-weight: 600; letter-spacing: 0.01em; color: #fff; white-space: nowrap;
 }}
@@ -68,9 +72,10 @@ section[data-testid="stSidebar"] {{ top: {BANNER_HEIGHT}; height: calc(100vh - {
 /* Hover: the icon itself shifts to a soft pink instead of a background highlight. */
 .st-key-reqfill-gear a:hover span, .st-key-reqfill-gear a:hover svg {{ color: #F2C4D2 !important; fill: #F2C4D2; }}
 .st-key-reqfill-gear a p {{ display: none; }}
-/* Home link: an invisible page link laid exactly over the logo. */
+/* Home link: an invisible page link laid exactly over the logo, which sits after the app launcher
+   (banner padding 1.25rem - launcher's -.5rem margin + its 2.5rem width + .85rem margin). */
 .st-key-reqfill-home {{
-    position: fixed; top: 0; left: 1.25rem; z-index: 1000041; width: 120px; gap: 0;
+    position: fixed; top: 0; left: 4.1rem; z-index: 1000041; width: 120px; gap: 0;
 }}
 .st-key-reqfill-home [data-testid="stElementContainer"], .st-key-reqfill-home [data-testid="stPageLink"] {{
     margin: 0; padding: 0;
@@ -81,6 +86,7 @@ section[data-testid="stSidebar"] {{ top: {BANNER_HEIGHT}; height: calc(100vh - {
 }}
 .st-key-reqfill-home a > * {{ display: none; }}
 </style>
+<style>""" + app_launcher.css() + """</style>
 """
 
 
@@ -89,7 +95,8 @@ def render_header(home_page, draft_page, board_page, admin_page, in_admin: bool 
     and the gear to `admin_page` (st.Page objects). On the admin pages the gear becomes a back arrow home."""
     st.html(
         _CSS
-        + f'<div class="app-top-banner"><span class="app-top-logo" role="img" aria-label="Cayenta"></span>'
+        + f'<div class="app-top-banner">{app_launcher.html("reqfill", dark=True)}'
+        '<span class="app-top-logo" role="img" aria-label="Cayenta"></span>'
         '<span class="banner-sep"></span>'
         f'<span class="app-top-title">{APP_NAME}</span></div>'
     )
