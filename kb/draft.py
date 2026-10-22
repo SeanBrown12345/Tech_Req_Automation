@@ -1459,7 +1459,7 @@ def apply_partner_answers(job_id: str, items: list[dict]) -> int:
                     continue
                 answer = item["ours"] | item["theirs"]
                 conn.execute("UPDATE rows SET final = ?, partner_status = 'received', received_at = ?,"
-                             " reviewed = CASE WHEN ? THEN 0 ELSE reviewed END"
+                             " reviewed = CASE WHEN ? = 1 THEN 0 ELSE reviewed END"
                              " WHERE job_id = ? AND sheet = ? AND row_num = ?",
                              (json.dumps(answer), now, item["status"] == ANSWERED, job_id, item["sheet"],
                               item["row_num"]))
