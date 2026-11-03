@@ -72,6 +72,7 @@ def _load() -> pd.DataFrame:
     rows = rows.merge(draft.note_summary(), on=["job_id", "sheet", "row_num"], how="left")
     rows["notes"], rows["all_notes"] = rows.notes.fillna(0).astype(int), rows.all_notes.fillna(0).astype(int)
     rows.loc[rows.notes == 0, "last_by"] = None  # resolved conversations wait on no one
+    rows["cost_impact"] = draft.sme_cost(rows)  # SMEs see only pricing flags a person set
     rows["who"] = [review_grid.name_or_none(a) for a in rows.assignee]
     rows["draft"] = [f"{n} — {c}" if isinstance(c, str) and c else n for n, c in zip(rows.draft_name, rows.client)]
     return rows
@@ -188,6 +189,24 @@ def _replies(rows: pd.DataFrame, person: str) -> None:
                 review_grid.thread(r.job_id, r.sheet, int(r.row_num), person, key="replies", compact=True)
 
 
+def _rows_table(view: pd.DataFrame, sheet_plan: dict) -> None:
+    """A read-only list of an SME's rows on one sheet, with the current answers (edits, else the AI's)."""
+    fields = [f for f in sheet_plan["fields"] if f.get("include", True)]
+    answers = [json.loads(f if isinstance(f, str) else a) for f, a in zip(view.final, view.ai)]
+    frame = pd.DataFrame({
+        "Row": view.row_num.values,
+        "Requirement": view.requirement.values,
+        **{f["label"]: [a.get(f["key"]) or "" if f["key"] in json.loads(fl) else None
+                        for a, fl in zip(answers, view.fill)] for f in fields},
+        "AI Confidence": view.confidence.map(review_grid.CONF_LABELS).values,
+        "Needs pricing": view.cost_impact.astype(bool).values,
+        "Approved": view.reviewed.astype(bool).values,
+    })
+    st.dataframe(frame, hide_index=True, width="stretch", height=min(400, 38 + 35 * len(frame)),
+                 column_config={"Row": st.column_config.NumberColumn(width="small"),
+                                "Requirement": st.column_config.TextColumn(width="large")})
+
+
 def person_view(rows: pd.DataFrame, person: str) -> None:
     with st.container(key="board-back"):
         st.button("", icon=":material/arrow_back:", type="tertiary", help="All people", on_click=_go)
@@ -207,7 +226,7 @@ def person_view(rows: pd.DataFrame, person: str) -> None:
     # Sheets with rows still to review first, finished ones (every row approved) below; newest draft first in each.
     sheets = sorted(mine.groupby(["job_id", "sheet"], sort=False), key=lambda g: bool(g[1].reviewed.all()))
     for (job_id, sheet), view in sheets:
-        _, multi = _sheet_plan(view, sheet)
+        sheet_plan, multi = _sheet_plan(view, sheet)
         c = _counts(view)
         with st.container(border=True):
             title, actions = st.columns([3, 2], vertical_alignment="center")
@@ -231,6 +250,15 @@ def person_view(rows: pd.DataFrame, person: str) -> None:
             if c["messages"]:
                 st.caption(f":blue[:material/forum: **{c['messages']} row{'s' * (c['messages'] != 1)} with a "
                            "note for you**]: open the row to read it and reply.")
+            with st.expander("Rows"):
+                _rows_table(view, sheet_plan)
+                st.download_button(
+                    "Download worksheet", lambda j=job_id: draft.build_partner_export(j, person),
+                    key=f"download:{job_id}:{sheet}", file_name=f"{Path(view.filename.iloc[0]).stem} - {person}.xlsx",
+                    icon=":material/download:", on_click="ignore",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    help="The worksheet with only your rows on this draft, filled with the current answers; "
+                         "every other row hidden.")
 
 
 # =================================================================================================
@@ -328,24 +356,29 @@ def partner_view(mine: pd.DataFrame, person: str) -> None:
 def _queue(view: pd.DataFrame, partner: bool = False) -> list[int]:
     """Review order: the sheet's row order, the same as the table, so switching views doesn't reshuffle the
     rows. For a partner's rows, answers they changed come first, then answers they sent back as drafted, then
-    rows not answered yet. Rows already approved are left out unless everything is (then it's a second pass
-    over them all)."""
-    todo = view[view.reviewed == 0] if (view.reviewed == 0).any() else view
+    rows not answered yet. Approved rows stay in, so Previous can go back to them; the review starts at the
+    first row not yet approved (see _review_start)."""
     if not partner:
-        return todo.sort_values("row_num").row_num.tolist()
+        return view.sort_values("row_num").row_num.tolist()
 
     def group(status, final, ai):
         if status != "received":
             return 2
         return 0 if isinstance(final, str) and json.loads(final) != json.loads(ai) else 1
 
-    rank = [group(s, f, a) for s, f, a in zip(todo.partner_status, todo.final, todo.ai)]
-    return todo.assign(_rank=rank).sort_values(["_rank", "row_num"]).row_num.tolist()
+    rank = [group(s, f, a) for s, f, a in zip(view.partner_status, view.final, view.ai)]
+    return view.assign(_rank=rank).sort_values(["_rank", "row_num"]).row_num.tolist()
+
+
+def _review_start(view: pd.DataFrame, partner: bool) -> dict:
+    """A fresh review of the sheet: every row in review order, on the first row not yet approved (the first
+    row when everything is, for a second pass)."""
+    queue, open_ = _queue(view, partner), set(view.row_num[view.reviewed == 0])
+    return {"queue": queue, "pos": next((i for i, n in enumerate(queue) if n in open_), 0)}
 
 
 def _start_review(person: str, job_id: str, sheet: str, view: pd.DataFrame) -> None:
-    st.session_state.review = {"job": job_id, "sheet": sheet, "queue": _queue(view, person in draft.partners()),
-                               "pos": 0}
+    st.session_state.review = {"job": job_id, "sheet": sheet, **_review_start(view, person in draft.partners())}
     _go(person=person, draft=job_id, sheet=sheet)
 
 
@@ -361,7 +394,9 @@ def _save_answers(job_id: str, sheet: str, row_num: int, fields: list[dict], ans
 
 
 def _move(step: int, approve: bool | None, job_id: str, sheet: str, row_num: int, fields: list[dict],
-          answers: dict, sheet_plan: dict | None = None) -> None:
+          answers: dict, sheet_plan: dict | None = None, to_open: bool = False) -> None:
+    """Save the row's answers (and approval), then move `step` rows; `to_open` moves forward to the next row
+    not yet approved instead, past approved ones (the end of the review if there's none)."""
     _save_answers(job_id, sheet, row_num, fields, answers)
     if approve and sheet_plan:
         current = {f["key"]: st.session_state.get(_field_key(job_id, sheet, row_num, f["key"])) or "" for f in fields}
@@ -369,8 +404,14 @@ def _move(step: int, approve: bool | None, job_id: str, sheet: str, row_num: int
             st.session_state.review_blocked = (job_id, sheet, row_num, note)  # stay on the row and say why
             return
     if approve is not None:
-        draft.save_review(job_id, sheet, row_num, reviewed=approve)
-    st.session_state.review["pos"] += step
+        draft.save_review(job_id, sheet, row_num, reviewed=approve, sme=True)
+    rv = st.session_state.review
+    if to_open:
+        open_ = rv["open"] - {row_num}
+        rv["pos"] = next((i for i in range(rv["pos"] + 1, len(rv["queue"])) if rv["queue"][i] in open_),
+                         len(rv["queue"]))
+    else:
+        rv["pos"] += step
 
 
 def _flag(job_id: str, sheet: str, row_num: int) -> None:
@@ -575,7 +616,7 @@ def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str, mode: 
     partner = person in draft.partners()
     rv = st.session_state.get("review")
     if not rv or (rv["job"], rv["sheet"]) != (job_id, sheet):  # opened from a link or refreshed
-        rv = st.session_state.review = {"job": job_id, "sheet": sheet, "queue": _queue(view, partner), "pos": 0}
+        rv = st.session_state.review = {"job": job_id, "sheet": sheet, **_review_start(view, partner)}
     queue = [n for n in rv["queue"] if n in set(view.row_num)]  # rows reassigned meanwhile drop out
     rv["queue"], rv["pos"] = queue, min(rv["pos"], len(queue))
 
@@ -625,11 +666,14 @@ def _row_review(person: str, job_id: str, sheet: str, view: pd.DataFrame, sheet_
     """The row the review is on, with its answers to edit and approve."""
     rv = st.session_state.review
     queue = rv["queue"]
+    rv["open"] = set(view.row_num[view.reviewed == 0])  # where Skip and Approve & next go (see _move)
     approved = int(view.reviewed.sum())
     if rv["pos"] >= len(queue):
         st.success(f"That's every row in this review. {len(view) - approved:,} left unapproved on this sheet."
                    if approved < len(view) else "Every row on this sheet is approved.")
-        a, b, _ = st.columns([1, 1, 3])
+        p, a, b, _ = st.columns([1, 1, 1, 2])
+        p.button("Previous", icon=":material/chevron_left:", width="stretch", disabled=not queue,
+                 on_click=lambda: rv.update(pos=len(queue) - 1))
         if approved < len(view):
             a.button("Review what's left", type="primary", width="stretch",
                      on_click=_start_review, args=(person, job_id, sheet, view))
@@ -702,14 +746,15 @@ def _row_review(person: str, job_id: str, sheet: str, view: pd.DataFrame, sheet_
         p.button("Previous", icon=":material/chevron_left:", width="stretch", disabled=rv["pos"] == 0,
                  on_click=_move, args=(-1, None, *nav))
         s.button("Skip", icon=":material/chevron_right:", width="stretch", on_click=_move, args=(1, None, *nav),
+                 kwargs={"to_open": True},
                  help="Keep your edits and come back to this row later")
         if r.reviewed:
-            a.button("Next", type="primary", icon=":material/arrow_forward:", width="stretch",
+            a.button("Next", icon=":material/arrow_forward:", width="stretch",
                      on_click=_move, args=(1, None, *nav))
             st.button("Undo approval", type="tertiary", on_click=_move, args=(0, False, *nav))
         else:
             a.button("Approve & next", type="primary", icon=":material/check:", width="stretch",
-                     on_click=_move, args=(1, True, *nav), kwargs={"sheet_plan": sheet_plan})
+                     on_click=_move, args=(1, True, *nav), kwargs={"sheet_plan": sheet_plan, "to_open": True})
         # Keyed per row, so it starts closed on the next row after a hand-off.
         with h.popover("Reassign", icon=":material/move_item:", width="stretch",
                        key=_field_key(job_id, sheet, row_num, "_reassign_menu"),

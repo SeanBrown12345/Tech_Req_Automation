@@ -216,6 +216,7 @@ CREATE TABLE IF NOT EXISTS rows (
     ai_confidence TEXT,
     best_similarity REAL,
     cost_impact  INTEGER,
+    cost_by      TEXT,                  -- person = the pricing flag was set by a person; NULL = the AI's flag
     cost_note    TEXT,
     rationale    TEXT,
     evidence     TEXT,                  -- JSON list of past answers shown to the model
@@ -276,7 +277,7 @@ _ADDED_COLUMNS = {
     "jobs": {"auto_approve": "TEXT"},
     "rows": {"assignee": "TEXT", "returned_by": "TEXT", "return_note": "TEXT", "module": "TEXT",
              "partner_status": "TEXT", "sent_at": "TEXT", "received_at": "TEXT", "approved_by": "TEXT",
-             "notified": "TEXT"},
+             "notified": "TEXT", "cost_by": "TEXT"},
     "people": {"kind": "TEXT NOT NULL DEFAULT 'sme'", "modules": "TEXT"},
     "row_notes": {"resolved_at": "TEXT", "resolved_by": "TEXT"},
 }
@@ -641,7 +642,7 @@ def _save(conn, job_id: str, sheet: str, results: dict[int, dict], errors: dict[
         for row_num, res in results.items():
             conn.execute(
                 "UPDATE rows SET ai = ?, final = NULL, status = ?, confidence = ?, ai_confidence = ?,"
-                " best_similarity = ?, cost_impact = ?, cost_note = ?, rationale = ?, evidence = ?, error = NULL"
+                " best_similarity = ?, cost_impact = ?, cost_by = NULL, cost_note = ?, rationale = ?, evidence = ?, error = NULL"
                 " WHERE job_id = ? AND sheet = ? AND row_num = ?",
                 (json.dumps(res["ai"]), res["status"], res["confidence"], res["ai_confidence"],
                  res["best_similarity"], res["cost_impact"], res["cost_note"], res["rationale"],
@@ -742,14 +743,21 @@ def conn_status(job_id: str) -> str | None:
 # ================================================================================================
 
 def save_review(job_id: str, sheet: str, row_num: int, final: dict | None = None,
-                reviewed: bool | None = None, cost_impact: bool | None = None) -> None:
+                reviewed: bool | None = None, cost_impact: bool | None = None, sme: bool = False) -> None:
     """Save a reviewer's changes: edited answers, approval, and the pricing flag (which starts as the
-    AI's "may add cost" judgement and drives the yellow highlight in the download)."""
+    AI's "may add cost" judgement and drives the yellow highlight in the download).
+    `sme`: saved from the task board, where SMEs see only flags a person set (see sme_cost). An SME approving
+    a row without flagging it clears the AI's flag; until then it keeps the row from being auto-approved."""
     conn = connect_drafts()
     with conn:
         if cost_impact is not None:
-            conn.execute("UPDATE rows SET cost_impact = ? WHERE job_id = ? AND sheet = ? AND row_num = ?",
+            conn.execute("UPDATE rows SET cost_impact = ?, cost_by = 'person'"
+                         " WHERE job_id = ? AND sheet = ? AND row_num = ?",
                          (int(cost_impact), job_id, sheet, row_num))
+        if sme and reviewed:
+            conn.execute("UPDATE rows SET cost_impact = 0, cost_by = 'person'"
+                         " WHERE job_id = ? AND sheet = ? AND row_num = ? AND cost_by IS NULL",
+                         (job_id, sheet, row_num))
         if final is not None:
             conn.execute("UPDATE rows SET final = ? WHERE job_id = ? AND sheet = ? AND row_num = ?",
                          (json.dumps(final), job_id, sheet, row_num))
@@ -757,6 +765,12 @@ def save_review(job_id: str, sheet: str, row_num: int, final: dict | None = None
             conn.execute("UPDATE rows SET reviewed = ?, approved_by = 'person'"
                          " WHERE job_id = ? AND sheet = ? AND row_num = ?", (int(reviewed), job_id, sheet, row_num))
     conn.close()
+
+
+def sme_cost(rows):
+    """The pricing flag as SMEs see it: only flags a person set. The AI's own flag is hidden from them (it
+    still routes the row to review), so they never have to undo it."""
+    return ((rows.cost_impact == 1) & (rows.cost_by == "person")).astype(int)
 
 
 # ================================================================================================
@@ -1325,7 +1339,7 @@ def _trimmed_export(job_id: str, where: str, params: tuple) -> bytes:
 
 
 def build_partner_export(job_id: str, partner: str) -> bytes:
-    """The client's workbook as a partner should see it: only their rows, filled with our drafts."""
+    """The client's workbook as a partner (or SME) should see it: only their rows, filled with our drafts."""
     return _trimmed_export(job_id, "assignee = ?", (partner,))
 
 

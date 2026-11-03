@@ -198,7 +198,8 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
     each row back, for rows SMEs unassigned. `selectable` adds a Select tick box per row; the ticked
     row numbers are returned (ticking isn't an edit, nothing is saved). `reviewer` is the SME's own
     view on the task board: Row, Requirement, the answers, Confidence, Needs pricing and Approved only,
-    with a narrative/comments answer column titled just "Comments" and Confidence titled "AI Confidence".
+    with a narrative/comments answer column titled just "Comments" and Confidence titled "AI Confidence";
+    its approvals clear the AI's pricing flag on rows the SME didn't flag (see draft.save_review).
     `wrap` wraps long text in taller rows; left as None, the grid offers its own Wrap text toggle in
     fullscreen only. The height fits the rows, up to 520px, unless given."""
     sheet = sheet_plan["name"]
@@ -295,7 +296,7 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
             if after.Approved and draft.missing_comment(sheet_plan, new_values, keys):
                 blocked.append(row_num)  # its response needs a comment: the tick is undone below
             else:
-                draft.save_review(job_id, sheet, row_num, reviewed=bool(after.Approved))
+                draft.save_review(job_id, sheet, row_num, reviewed=bool(after.Approved), sme=reviewer)
         if module_names and name_or_none(after.Module) not in (None, name_or_none(before.Module)):
             draft.set_module(job_id, sheet, [row_num], after.Module)
         if name_or_none(after["Assigned to"]) != name_or_none(before["Assigned to"]):
