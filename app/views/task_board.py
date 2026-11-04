@@ -51,6 +51,13 @@ button:focus-visible {{ box-shadow: 0 0 0 0.2rem rgba(200, 69, 106, 0.5) !import
 [class*="st-key-open-"] button {{ background: #ffffff; color: #16181D; border-color: #ffffff; }}
 [class*="st-key-open-"] button:hover {{ background: #E6E8EC; color: #16181D; border-color: #E6E8EC; }}
 [class*="st-key-open-"] button:active, [class*="st-key-open-"] button:focus {{ color: #16181D; }}
+/* The row card's heading shares its line with the Row button: the divider runs under both, the card's width. */
+.st-key-card-row .st-key-rv-head {{
+    border-bottom: 1px solid rgba(128, 128, 128, 0.25); padding-bottom: 0.6rem; margin-bottom: 0.5rem;
+}}
+.st-key-card-row .st-key-rv-head [data-testid="stHeading"] h3 {{ border-bottom: none; padding-bottom: 0; margin-bottom: 0; }}
+/* Streamlit pulls a heading's text up into the next element (-1rem); here that would sit it low beside the button. */
+.st-key-rv-head [data-testid="stHeading"] [data-testid="stMarkdownContainer"] {{ margin-bottom: 0; }}
 /* The requirement under review stands out from the rest of the page. */
 .st-key-rv-requirement {{ border-left: 4px solid {ACCENT}; padding-left: 1rem; }}
 .st-key-rv-requirement p {{ font-size: 1.15rem; line-height: 1.5; }}
@@ -507,6 +514,68 @@ def _goto_row(person: str, job_id: str, sheet: str, row_num: int, mode: str | No
     _new_view()
 
 
+def _jump(person: str, job_id: str, sheet: str, row_num: int, nav: tuple) -> None:
+    """Row by row, go straight to the row picked in the jump menu, keeping what's typed on the current row."""
+    _save_answers(*nav)
+    _goto_row(person, job_id, sheet, row_num, None)
+
+
+# The jump button is small (no icon, little padding). Its menu reads as a dropdown's list: one item per row,
+# the row number over the start of its requirement, highlighted on hover, approved rows tinted green, the
+# current row marked.
+_JUMP_MENU = f"""<style>
+[class*="_jump_menu"] button {{ padding: 0.2rem 0.6rem; min-height: 0; }}
+/* The whole menu scrolls, search box and all, so the search scrolls away with the rows. */
+[data-testid="stPopoverBody"]:has(.st-key-jump-list) {{
+    width: 520px; max-width: 90vw; padding: 0.5rem; max-height: 460px; overflow-y: auto;
+}}
+.st-key-jump-list [data-testid="stElementContainer"] {{ margin-bottom: 3px; }}
+.st-key-jump-list button {{
+    width: 100%; justify-content: flex-start; text-align: left; border: none; background: transparent;
+    padding: 0.35rem 0.6rem; min-height: 0; border-radius: 0.4rem;
+}}
+.st-key-jump-list button:hover {{ background: rgba(255, 255, 255, 0.08); color: inherit; }}
+.st-key-jump-list button > div {{ justify-content: flex-start; margin: 0; width: 100%; }}
+.st-key-jump-list button [data-testid="stMarkdownContainer"] {{ text-align: left; width: 100%; }}
+.st-key-jump-list button p {{ font-size: 0.875rem; line-height: 1.35; white-space: normal; }}
+.st-key-jump-list button p strong {{ display: block; }}
+.st-key-jump-list [class*="st-key-jumpok-"] button {{ background: rgba(46, 160, 67, 0.16); }}
+.st-key-jump-list [class*="st-key-jumpok-"] button:hover {{ background: rgba(46, 160, 67, 0.28); }}
+.st-key-jump-list [class*="st-key-jumpcur-"] button {{ background: rgba(255, 255, 255, 0.12); box-shadow: inset 3px 0 {ACCENT}; }}
+</style>"""
+
+
+def _jump_menu(person: str, job_id: str, sheet: str, view: pd.DataFrame, queue: list[int], row_num: int,
+               nav: tuple) -> None:
+    """The button naming the row the review is on; it opens a menu of the review's rows with their
+    requirements, to search and pick one to go to it. Keyed per row, so it closes once the jump is made."""
+    st.html(_JUMP_MENU)
+    with st.popover(f"Row {row_num}", key=_field_key(job_id, sheet, row_num, "_jump_menu"),
+                    help="Go straight to any of your rows on this sheet"):
+        find = st.text_input("Search rows", placeholder="Row number or words in the requirement",
+                             key=_field_key(job_id, sheet, row_num, "_jump_find"), icon=":material/search:",
+                             label_visibility="collapsed").strip().lower()
+        rows = view.set_index("row_num").loc[queue]
+        shown = 0
+        with st.container(border=False, gap=None, key="jump-list"):  # the menu scrolls as a whole, see _JUMP_MENU
+            for n, r in rows.iterrows():
+                text = " ".join(str(r.requirement).split())
+                if find and find not in f"{n} {text}".lower():
+                    continue
+                shown += 1
+                short = text if len(text) <= 110 else text[:105].rsplit(" ", 1)[0] + " …"
+                kind = "cur" if n == row_num else "ok" if r.reviewed else "to"  # styled by _JUMP_MENU
+                st.button(f"**Row {n}{' ✓' if r.reviewed else ''}** {_md_escape(short)}", key=f"jump{kind}-{n}",
+                          type="tertiary", width="stretch", on_click=_jump, args=(person, job_id, sheet, int(n), nav))
+            if not shown:
+                st.caption("No rows match.")
+
+
+def _md_escape(text: str) -> str:
+    """Requirement text as plain text in a button label, which reads Markdown."""
+    return "".join("\\" + c if c in "\\`*_{}[]()#+-.!|~<>$:" else c for c in text)
+
+
 _NOTE_CARDS = f"""<style>
 /* The panel stands apart from the page, as Office's comments pane does: a lighter pane, cards lighter again
    (the app's theme is always dark, see .streamlit/config.toml). */
@@ -688,7 +757,10 @@ def _row_review(person: str, job_id: str, sheet: str, view: pd.DataFrame, sheet_
     nav = (job_id, sheet, row_num, fields, answers)
 
     with st.container(border=True, key="card-row"):
-        st.subheader("Requirement")
+        head, jump = st.container(key="rv-head").columns([3, 1], vertical_alignment="center")
+        head.subheader("Requirement")
+        with jump.container(horizontal=True, horizontal_alignment="right", vertical_alignment="center"):
+            _jump_menu(person, job_id, sheet, view, queue, row_num, nav)
         with st.container(key="rv-requirement"):
             if isinstance(r.parent_text, str) and r.parent_text:
                 st.caption(f"Under: {r.parent_text}")
@@ -767,7 +839,6 @@ def _row_review(person: str, job_id: str, sheet: str, view: pd.DataFrame, sheet_
                          placeholder="Why it's theirs, or what you need from them. They see it on the row.")
             st.button("Accept", type="primary", width="stretch", disabled=choice is None,
                       on_click=_reassign, args=(person, *nav))
-        st.caption(f"Row {rv['pos'] + 1} of {len(queue)} in this review")
         context = " › ".join(v for v in json.loads(r.context).values() if v) if isinstance(r.context, str) else ""
         st.caption(" · ".join(p for p in [r.req_id if isinstance(r.req_id, str) else "", f"Worksheet row {row_num}",
                                          context] if p))
