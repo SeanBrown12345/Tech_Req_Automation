@@ -1,5 +1,8 @@
 """Shared dashboard helpers: database access, cached model, status display."""
 
+from datetime import date, datetime
+
+import pandas as pd
 import streamlit as st
 
 from kb import store
@@ -11,6 +14,20 @@ STATUS_LABELS = {
     "FUTURE": "Future", "CUSTOM": "Custom", "THIRD_PARTY": "Third party", "NOT_SUPPORTED": "Not supported",
     "NEEDS_DISCUSSION": "Needs discussion", "NOT_APPLICABLE": "N/A", "NARRATIVE": "Narrative",
 }
+def as_date(value) -> date | None:
+    """A date column's value as a date, whichever shape the database gave it: ISO text (SQLite), a date or
+    datetime (Postgres), a pandas Timestamp, or empty (None, NaN, NaT, "")."""
+    if value is None or isinstance(value, str) and not value.strip():
+        return None
+    if isinstance(value, str):
+        return date.fromisoformat(value.strip()[:10])
+    if isinstance(value, datetime):  # Timestamp is one too; before date, which datetime also is
+        return None if pd.isna(value) else value.date()
+    if isinstance(value, date):
+        return value
+    return None  # NaN, from an empty cell in a column pandas made numeric
+
+
 # Badge color always travels with the text label, never alone.
 _STATUS_COLORS = {
     "STANDARD": "green", "SUPPORTED": "green", "NOT_SUPPORTED": "red", "NEEDS_DISCUSSION": "violet",

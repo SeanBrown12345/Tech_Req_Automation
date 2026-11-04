@@ -13,7 +13,7 @@ import streamlit as st
 
 from app import review_grid
 from app.admin_layout import ACCENT
-from app.common import card_styles, status_badge
+from app.common import as_date, card_styles, status_badge
 from app.header import BANNER_COLOR
 from kb import db, draft, notify
 
@@ -238,8 +238,7 @@ def person_view(rows: pd.DataFrame, person: str) -> None:
         with st.container(border=True):
             title, actions = st.columns([3, 2], vertical_alignment="center")
             title.markdown(f"#### {view.draft.iloc[0]}" + (f" · {sheet}" if multi else ""))
-            if due := dues.get(job_id):
-                d = date.fromisoformat(due)
+            if d := as_date(dues.get(job_id)):
                 title.caption(f":material/event: Due {d:%a} {d.day} {d:%b %Y}"
                               + (" · **past due**" if d < date.today() and c["left"] else ""))
             with actions.container(horizontal=True, horizontal_alignment="right"):
@@ -442,7 +441,7 @@ def _email_handoff(person: str, to: str, job_id: str, sheet: str, row_nums: list
         return f" {to} has no email address, so wasn't emailed." + later
     due = draft.due_dates(to).get(job_id)
     msg = notify.handoff_message(to, email, person, job_id, draft.job_title(job_id), sheet, row_nums, note or None,
-                                 date.fromisoformat(due) if due else None)
+                                 as_date(due))
     try:
         failed = notify.send([msg])
     except notify.SEND_ERRORS as e:

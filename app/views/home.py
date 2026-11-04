@@ -6,7 +6,7 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from app.common import card_styles
+from app.common import as_date, card_styles
 from app.header import BANNER_COLOR
 from kb import draft
 
@@ -48,10 +48,9 @@ def _go(target: str) -> None:
     st.session_state.home_go = target
 
 
-def _due(due: str | None) -> str:
-    if not due:
+def _due(due) -> str:
+    if not (d := as_date(due)):
         return ""
-    d = date.fromisoformat(due)
     return f", due {d:%a} {d.day} {d:%b}" + (" · **past due**" if d < date.today() else "")
 
 

@@ -6,6 +6,7 @@ from datetime import date, datetime
 import pandas as pd
 import streamlit as st
 
+from app.common import as_date
 from kb import draft, notify
 
 st.title("Notifications")
@@ -32,12 +33,6 @@ if work.empty:
 work["draft"] = [f"{n} — {c}" if isinstance(c, str) and c.strip() else n for n, c in zip(work.draft_name, work.client)]
 
 
-def _day(value) -> date | None:
-    """A date from the table (date, Timestamp, ISO text or empty)."""
-    if value is None or (not isinstance(value, str) and pd.isna(value)):
-        return None
-    return date.fromisoformat(value) if isinstance(value, str) else getattr(value, "date", lambda: value)()
-
 
 def _last(at, kind) -> str:
     if not isinstance(at, str):
@@ -61,12 +56,12 @@ if pick != "All drafts":
             st.rerun()
 
 today = date.today()
-overdue = sum(1 for d in view.due if (_day(d) or today) < today)
+overdue = sum(1 for d in view.due if (as_date(d) or today) < today)
 st.caption(f"{len(view):,} SME{'s' * (len(view) != 1)} with open rows · {int((view.new > 0).sum()):,} with rows "
            "they haven't been emailed about" + (f" · **{overdue} past their due date**" if overdue else ""))
 
 # ---- The table: tick lines to email them; edit Due in place --------------------------------------------
-shown = view.assign(send=False, email=view.email.fillna(""), due=[_day(d) for d in view.due],
+shown = view.assign(send=False, email=view.email.fillna(""), due=[as_date(d) for d in view.due],
                     last=[_last(a, k) for a, k in zip(view.emailed_at, view.emailed_kind)])
 columns = ["send", "person", "email", "draft", "open", "new", "last", "due", "job_id"]
 edited = st.data_editor(
@@ -86,8 +81,8 @@ edited = st.data_editor(
 
 # Due dates save as they're edited.
 for i, t in enumerate(view.itertuples()):
-    if _day(edited.due.iloc[i]) != _day(t.due):
-        new_due = _day(edited.due.iloc[i])
+    if as_date(edited.due.iloc[i]) != as_date(t.due):
+        new_due = as_date(edited.due.iloc[i])
         draft.set_due(t.job_id, t.person, new_due.isoformat() if new_due else None)
         st.toast(f"Due date saved for {t.person}.", icon=":material/event:")
 
@@ -117,7 +112,7 @@ def _confirm(kind: str, targets: pd.DataFrame):
             if covered.empty:
                 continue
             msg = notify.message(kind, t.person, t.email, t.draft,
-                                 covered.groupby("sheet", sort=False).size().to_dict(), len(rows), _day(t.due))
+                                 covered.groupby("sheet", sort=False).size().to_dict(), len(rows), as_date(t.due))
             batch.append((t, msg, covered))
         try:
             failed = notify.send([msg for _, msg, _ in batch])
