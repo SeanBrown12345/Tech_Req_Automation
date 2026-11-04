@@ -5,6 +5,7 @@ No sign-in: people find themselves by name. The address carries where they are (
 and &sheet= in a review), so a link opens someone's view directly and a refresh keeps the place."""
 
 import json
+import re
 from datetime import date
 from pathlib import Path
 
@@ -42,8 +43,28 @@ st.html(f"""<style>
 [data-testid="stButtonGroup"] button:hover {{ border-color: {MAROON} !important; }}
 [data-testid="stButtonGroup"] button[aria-checked="true"] * {{ color: #fff !important; }}
 button:focus-visible {{ box-shadow: 0 0 0 0.2rem rgba(200, 69, 106, 0.5) !important; }}
-/* Notes sits beside the Row by row | Table switch, at its height. */
-[class*="st-key-notes-panel-"] button {{ min-height: 32px; height: 32px; padding-top: 0; padding-bottom: 0; }}
+/* Instructions and Notes sit beside the Row by row | Table switch, at its height. */
+[class*="st-key-notes-panel-"] button, [class*="st-key-instructions-"] button {{
+    min-height: 32px; height: 32px; padding-top: 0; padding-bottom: 0;
+}}
+/* The review header: the title and the controls on one line, the divider under both. The title is a size down
+   from the page titles, and cut off with "…" rather than wrapping or pushing the controls along. On a narrow
+   window the controls go under the title. */
+.st-key-rv-bar {{
+    border-bottom: 1px solid rgba(128, 128, 128, 0.25); padding-bottom: 0.6rem; margin-bottom: 0.5rem;
+}}
+.st-key-rv-bar [data-testid="stElementContainer"]:has([data-testid="stHeading"]) {{ min-width: 0; flex: 1 1 0; }}
+.st-key-rv-bar [data-testid="stHeading"] h1 {{
+    font-size: 2.25rem; border-bottom: none; padding: 0; margin: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}}
+.st-key-rv-bar [data-testid="stHeading"] [data-testid="stMarkdownContainer"] {{ margin-bottom: 0; }}
+/* The back arrow stays level with this smaller, higher title. */
+body:has(.st-key-rv-bar) .st-key-board-back button {{ top: 1.1rem; }}
+@media (max-width: 760px) {{
+    .st-key-rv-bar {{ flex-wrap: wrap; row-gap: 0.5rem; }}
+    .st-key-rv-bar [data-testid="stElementContainer"]:has([data-testid="stHeading"]) {{ flex-basis: 100%; }}
+}}
 /* Except Notes when something waits on you: blue, as the rows with notes are. */
 [class*="st-key-notes-panel-"] [data-testid="stBaseButton-primary"] {{ background: #3987e5; border-color: #3987e5; }}
 [class*="st-key-notes-panel-"] [data-testid="stBaseButton-primary"]:hover {{ background: #5A9CEB; border-color: #5A9CEB; }}
@@ -675,6 +696,58 @@ def _switch_mode(person: str, job_id: str, sheet: str, key: str) -> None:
         _go(person=person, draft=job_id, sheet=sheet, mode=MODES[picked])
 
 
+def _instruction_sections(text: str, sheet: str) -> list[tuple[str, list[str]]]:
+    """The worksheet instructions as (heading, lines), for one sheet: every instructions sheet, and the notes
+    above this sheet's table (not other sheets'). Headings are as guess_plan wrote them, and may have been edited:
+    text before the first one, or with none at all, comes under no heading."""
+    sections = []
+    for i, part in enumerate(re.split(r"(?m)^## ", text or "")):
+        head, body = ("", part) if i == 0 else part.partition("\n")[::2]
+        if above := re.fullmatch(r"Notes above the table on sheet '(.+)'", head.strip()):
+            if above.group(1) != sheet:
+                continue
+            head = "Above the table"
+        elif named := re.fullmatch(r"Sheet '(.+)'", head.strip()):
+            head = named.group(1)
+        if lines := [l.strip() for l in body.splitlines() if l.strip()]:
+            sections.append((head.strip(), lines))
+    return sections
+
+
+def _instruction_line(line: str) -> str:
+    """One line of the instructions as Markdown: a row's cells come joined by " | "; the first, often a label
+    ("VENDOR RESPONSE:"), goes in bold."""
+    first, *rest = [c.strip() for c in line.split(" | ")]
+    return f"**{_md_escape(first)}** {_md_escape(' · '.join(rest))}" if rest else _md_escape(first)
+
+
+@st.dialog("Instructions", width="medium")
+def _instructions(plan: dict, sheet_plan: dict, sheet: str) -> None:
+    """How to answer the sheet (each answer field, its choices and what a comment must give for them), then the
+    instructions from the client's workbook, as the bid team edited them on the draft page."""
+    st.subheader("How to answer", anchor=False)
+    for f in [f for f in sheet_plan["fields"] if f.get("include", True)]:
+        requires = f.get("requires") or {}
+        if f["kind"] == "choice":
+            lines = [f"- {_md_escape(o)}" + (f" — *comment must give: {_md_escape(requires[o])}*"
+                                              if requires.get(o) else "") for o in f["options"]]
+            st.markdown(f"**{_md_escape(f['label'])}**: pick one\n" + "\n".join(lines))
+        elif f["kind"] == "marks":
+            st.markdown(f"**{_md_escape(f['label'])}**\n"
+                        + "\n".join(f"- {_md_escape(f['labels'][c])}" for c in f["columns"]))
+        else:
+            st.markdown(f"**{_md_escape(f['label'])}**: written answer"
+                        + (f". {_md_escape(f['guidance'])}" if f.get("guidance") else ""))
+    sections = _instruction_sections(plan.get("instructions") or "", sheet)
+    st.divider()
+    st.subheader("From the client's workbook", anchor=False)
+    if not sections:
+        st.caption("The workbook has no instructions for this sheet.")
+    for head, lines in sections:
+        st.markdown((f"**{_md_escape(head)}**\n\n" if head else "")
+                    + "  \n".join(_instruction_line(l) for l in lines))
+
+
 def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str, mode: str | None) -> None:
     """One sheet of one person's rows, reviewed row by row or in a table (SMEs can switch; partners'
     answers are reviewed row by row)."""
@@ -695,24 +768,31 @@ def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str, mode: 
         st.info("These rows are no longer assigned to you.")
         return
     sheet_plan, multi = _sheet_plan(view, sheet)
-    title = view.draft.iloc[0] + (f" · {sheet}" if multi else "")
     panel = _panel_key(job_id, sheet)
-    if partner:
-        st.title(title)
-    else:
-        head, notes_button, switch = st.columns([3, 0.55, 1], vertical_alignment="center")
-        head.title(title)
-        noted, waiting = int((view.notes > 0).sum()), int((view.last_by.notna() & (view.last_by != person)).sum())
-        notes_button.button(f"Notes ({noted})" if noted else "Notes", icon=":material/forum:", width="stretch",
-                            type="primary" if waiting and not st.session_state.get(panel) else "secondary",
-                            on_click=_toggle_panel, args=(panel,), key=f"{panel}:toggle",
-                            help="Show or hide the notes on your rows of this sheet"
-                                 + (f" ({waiting} waiting on you)" if waiting else ""))
-        key = f"mode:{job_id}:{sheet}"
-        st.session_state[key] = next(k for k, v in MODES.items() if v == mode)  # follow the address
-        switch.segmented_control("Review mode", list(MODES), key=key, label_visibility="collapsed",
-                                 width="stretch", on_change=_switch_mode, args=(person, job_id, sheet, key))
+    # The title shares its line with the controls: the client first, so a long draft name is what gets cut
+    # off (see .st-key-rv-bar), then the sheet when there are several.
+    first = view.iloc[0]
+    client = first.client.strip() if isinstance(first.client, str) else ""
+    title = " — ".join(p for p in [client, first.draft_name] if p) + (f" · {sheet}" if multi else "")
     approved = int(view.reviewed.sum())
+    with st.container(horizontal=True, vertical_alignment="center", gap="small", key="rv-bar"):
+        st.title(title, anchor=False, width="stretch")
+        # Left to right: Notes, Instructions, then the Row by row | Table switch at the end.
+        if not partner:
+            noted, waiting = int((view.notes > 0).sum()), int((view.last_by.notna() & (view.last_by != person)).sum())
+            st.button(f"Notes ({noted})" if noted else "Notes", icon=":material/forum:",
+                      type="primary" if waiting and not st.session_state.get(panel) else "secondary",
+                      on_click=_toggle_panel, args=(panel,), key=f"{panel}:toggle",
+                      help="Show or hide the notes on your rows of this sheet"
+                           + (f" ({waiting} waiting on you)" if waiting else ""))
+        if st.button("Instructions", icon=":material/info:", key=f"instructions:{job_id}:{sheet}",
+                     help="How to answer this sheet, and the instructions from the client's workbook"):
+            _instructions(json.loads(view.plan.iloc[0]), sheet_plan, sheet)
+        if not partner:
+            key = f"mode:{job_id}:{sheet}"
+            st.session_state[key] = next(k for k, v in MODES.items() if v == mode)  # follow the address
+            st.segmented_control("Review mode", list(MODES), key=key, label_visibility="collapsed",
+                                 on_change=_switch_mode, args=(person, job_id, sheet, key))
     st.progress(approved / len(view), text=f"{approved:,} of {len(view):,} approved")
     if partner:
         main = st.container()
