@@ -5,14 +5,13 @@ No sign-in: people find themselves by name. The address carries where they are (
 and &sheet= in a review), so a link opens someone's view directly and a refresh keeps the place."""
 
 import json
-import re
 from datetime import date
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from app import review_grid
+from app import review_grid, sme_instructions
 from app.admin_layout import ACCENT
 from app.common import as_date, card_styles, status_badge
 from app.header import BANNER_COLOR
@@ -184,8 +183,6 @@ def people_list(rows: pd.DataFrame) -> None:
     if not theirs.empty:
         st.subheader("Partners")
         _cards(theirs, partner=True)
-    if unassigned := int((rows.who.isna() & rows.returned_by.isna() & (rows.approved_by != "auto")).sum()):
-        st.caption(f"{unassigned:,} drafted rows aren't assigned to anyone yet.")
 
 
 # =================================================================================================
@@ -696,56 +693,10 @@ def _switch_mode(person: str, job_id: str, sheet: str, key: str) -> None:
         _go(person=person, draft=job_id, sheet=sheet, mode=MODES[picked])
 
 
-def _instruction_sections(text: str, sheet: str) -> list[tuple[str, list[str]]]:
-    """The worksheet instructions as (heading, lines), for one sheet: every instructions sheet, and the notes
-    above this sheet's table (not other sheets'). Headings are as guess_plan wrote them, and may have been edited:
-    text before the first one, or with none at all, comes under no heading."""
-    sections = []
-    for i, part in enumerate(re.split(r"(?m)^## ", text or "")):
-        head, body = ("", part) if i == 0 else part.partition("\n")[::2]
-        if above := re.fullmatch(r"Notes above the table on sheet '(.+)'", head.strip()):
-            if above.group(1) != sheet:
-                continue
-            head = "Above the table"
-        elif named := re.fullmatch(r"Sheet '(.+)'", head.strip()):
-            head = named.group(1)
-        if lines := [l.strip() for l in body.splitlines() if l.strip()]:
-            sections.append((head.strip(), lines))
-    return sections
-
-
-def _instruction_line(line: str) -> str:
-    """One line of the instructions as Markdown: a row's cells come joined by " | "; the first, often a label
-    ("VENDOR RESPONSE:"), goes in bold."""
-    first, *rest = [c.strip() for c in line.split(" | ")]
-    return f"**{_md_escape(first)}** {_md_escape(' · '.join(rest))}" if rest else _md_escape(first)
-
-
 @st.dialog("Instructions", width="medium")
-def _instructions(plan: dict, sheet_plan: dict, sheet: str) -> None:
-    """How to answer the sheet (each answer field, its choices and what a comment must give for them), then the
-    instructions from the client's workbook, as the bid team edited them on the draft page."""
-    st.subheader("How to answer", anchor=False)
-    for f in [f for f in sheet_plan["fields"] if f.get("include", True)]:
-        requires = f.get("requires") or {}
-        if f["kind"] == "choice":
-            lines = [f"- {_md_escape(o)}" + (f" — *comment must give: {_md_escape(requires[o])}*"
-                                              if requires.get(o) else "") for o in f["options"]]
-            st.markdown(f"**{_md_escape(f['label'])}**: pick one\n" + "\n".join(lines))
-        elif f["kind"] == "marks":
-            st.markdown(f"**{_md_escape(f['label'])}**\n"
-                        + "\n".join(f"- {_md_escape(f['labels'][c])}" for c in f["columns"]))
-        else:
-            st.markdown(f"**{_md_escape(f['label'])}**: written answer"
-                        + (f". {_md_escape(f['guidance'])}" if f.get("guidance") else ""))
-    sections = _instruction_sections(plan.get("instructions") or "", sheet)
-    st.divider()
-    st.subheader("From the client's workbook", anchor=False)
-    if not sections:
-        st.caption("The workbook has no instructions for this sheet.")
-    for head, lines in sections:
-        st.markdown((f"**{_md_escape(head)}**\n\n" if head else "")
-                    + "  \n".join(_instruction_line(l) for l in lines))
+def _instructions(sheet_plan: dict) -> None:
+    """Which columns to fill and how (see app.sme_instructions); the bid team sets them on the draft page."""
+    sme_instructions.render(sheet_plan)
 
 
 def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str, mode: str | None) -> None:
@@ -786,8 +737,8 @@ def review_view(rows: pd.DataFrame, person: str, job_id: str, sheet: str, mode: 
                       help="Show or hide the notes on your rows of this sheet"
                            + (f" ({waiting} waiting on you)" if waiting else ""))
         if st.button("Instructions", icon=":material/info:", key=f"instructions:{job_id}:{sheet}",
-                     help="How to answer this sheet, and the instructions from the client's workbook"):
-            _instructions(json.loads(view.plan.iloc[0]), sheet_plan, sheet)
+                     help="Which columns to fill on this sheet, and how"):
+            _instructions(sheet_plan)
         if not partner:
             key = f"mode:{job_id}:{sheet}"
             st.session_state[key] = next(k for k, v in MODES.items() if v == mode)  # follow the address

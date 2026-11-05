@@ -872,6 +872,20 @@ def set_rules(job_id: str, sheet: str, field_key: str, requires: dict[str, str])
     apply_auto_approve(job_id)  # the rule's approvals follow the new rules
 
 
+def set_sme_instructions(job_id: str, sheet: str, note: str, helps: dict[str, str]) -> None:
+    """Save what SMEs and partners read in a sheet's Instructions (edited on the draft page): a note at the
+    top and how to fill each column (by field key)."""
+    conn = connect_drafts()
+    plan = json.loads(conn.execute("SELECT plan FROM jobs WHERE job_id = ?", (job_id,)).fetchone()["plan"])
+    conn.close()
+    sp = next(s for s in plan["sheets"] if s["name"] == sheet)
+    sp["sme_note"] = note.strip()
+    for f in sp["fields"]:
+        if f["key"] in helps:
+            f["sme_help"] = (helps[f["key"]] or "").strip()
+    save_plan(job_id, plan)
+
+
 # ================================================================================================
 # Auto-approve
 # ================================================================================================

@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from app import review_grid
+from app import review_grid, sme_instructions
 from app.admin_layout import ACCENT
 from app.common import card_styles
 from kb import db, draft, modules
@@ -298,43 +298,115 @@ def show_job(job_id: str):
     st.caption(f"{job.filename} · created {job.created_at[:16].replace('T', ' ')} UTC · model {job.model}")
 
 
+def _rule_choices(plan: dict) -> list[tuple[dict, dict]]:
+    """The (sheet, choice field) pairs that can have response rules: their sheet has a comment field."""
+    return [(sp, f) for sp in plan["sheets"] if sp.get("include", True) and draft.comment_field(sp)
+            for f in sp["fields"] if f.get("include", True) and f["kind"] == "choice" and f.get("options")]
+
+
+def _rules_label(plan: dict) -> str:
+    count = sum(len(f.get("requires") or {}) for _, f in _rule_choices(plan))
+    return (f"Responses that need a comment ({count})" if count else
+            "Responses that need a comment" + ("" if plan.get("rules_read") else " (not read yet)"))
+
+
 def _response_rules(job_id: str, plan: dict) -> None:
     """The responses each sheet wants a comment with (see draft.required_comment), editable; SMEs see them
     beside the response and can't approve such a row with an empty comment."""
-    choices = [(sp, f) for sp in plan["sheets"] if sp.get("include", True) and draft.comment_field(sp)
-               for f in sp["fields"] if f.get("include", True) and f["kind"] == "choice" and f.get("options")]
-    if not choices:
-        return
-    count = sum(len(f.get("requires") or {}) for _, f in choices)
-    label = (f"Responses that need a comment ({count})" if count else
-             "Responses that need a comment" + ("" if plan.get("rules_read") else " (not read yet)"))
-    with st.expander(label, icon=":material/edit_note:"):
-        st.caption("Read from the worksheet instructions. SMEs see the note beside the response, and a row with "
-                   "that response can't be approved while its comment is empty. Clear a note to drop the rule.")
-        for sp, f in choices:
-            if len(choices) > 1:
-                st.markdown(f"**{sp['name']} · {f['label']}**")
-            requires = f.get("requires") or {}
-            frame = pd.DataFrame({"Response": f["options"], "Comment must include": [requires.get(o, "") for o in
-                                                                                     f["options"]]})
-            key = f"rules:{job_id}:{sp['name']}:{f['key']}:{st.session_state.get('rules_rev', 0)}"
-            edited = st.data_editor(frame, hide_index=True, width="stretch", key=key, disabled=["Response"],
-                                    column_config={"Comment must include": st.column_config.TextColumn(
-                                        width="large", help="Leave empty when this response needs no comment")})
-            new = dict(zip(edited.Response, edited["Comment must include"].fillna("")))
-            if {o: n.strip() for o, n in new.items() if n.strip()} != requires:
-                draft.set_rules(job_id, sp["name"], f["key"], new)
-                review_grid.refresh()
-                st.rerun()
-        if st.button("Read again from instructions" if plan.get("rules_read") else "Read from instructions",
-                     icon=":material/auto_awesome:", key=f"rules-read:{job_id}",
-                     help="Replaces the notes above with what the AI reads in the worksheet instructions"):
-            with st.spinner("Reading the instructions..."):
-                draft.save_plan(job_id, draft.read_rules(plan))
-            draft.apply_auto_approve(job_id)
-            st.session_state.rules_rev = st.session_state.get("rules_rev", 0) + 1
+    choices = _rule_choices(plan)
+    st.caption("Read from the worksheet instructions. SMEs see the note beside the response, and a row with "
+               "that response can't be approved while its comment is empty. Clear a note to drop the rule.")
+    for sp, f in choices:
+        if len(choices) > 1:
+            st.markdown(f"**{sp['name']} · {f['label']}**")
+        requires = f.get("requires") or {}
+        frame = pd.DataFrame({"Response": f["options"], "Comment must include": [requires.get(o, "") for o in
+                                                                                 f["options"]]})
+        key = f"rules:{job_id}:{sp['name']}:{f['key']}:{st.session_state.get('rules_rev', 0)}"
+        edited = st.data_editor(frame, hide_index=True, width="stretch", key=key, disabled=["Response"],
+                                column_config={"Comment must include": st.column_config.TextColumn(
+                                    width="large", help="Leave empty when this response needs no comment")})
+        new = dict(zip(edited.Response, edited["Comment must include"].fillna("")))
+        if {o: n.strip() for o, n in new.items() if n.strip()} != requires:
+            draft.set_rules(job_id, sp["name"], f["key"], new)
             review_grid.refresh()
             st.rerun()
+    if st.button("Read again from instructions" if plan.get("rules_read") else "Read from instructions",
+                 icon=":material/auto_awesome:", key=f"rules-read:{job_id}",
+                 help="Replaces the notes above with what the AI reads in the worksheet instructions"):
+        with st.spinner("Reading the instructions..."):
+            draft.save_plan(job_id, draft.read_rules(plan))
+        draft.apply_auto_approve(job_id)
+        st.session_state.rules_rev = st.session_state.get("rules_rev", 0) + 1
+        review_grid.refresh()
+        st.rerun()
+
+
+@st.dialog("Instructions", width="medium")
+def _preview_instructions(sheet_plan: dict) -> None:
+    st.caption("What SMEs and partners see when they open Instructions on this sheet.")
+    sme_instructions.render(sheet_plan)
+
+
+def _instruction_sheets(plan: dict) -> list[dict]:
+    return [sp for sp in plan["sheets"] if sp.get("include", True) and sme_instructions.fields(sp)]
+
+
+def _sme_instructions_editor(job_id: str, plan: dict) -> None:
+    """What SMEs and partners read in a sheet's Instructions (see app.sme_instructions): a note at the top, how
+    to fill each column. Saved with the plan."""
+    sheets = _instruction_sheets(plan)
+    st.caption("SMEs and partners open these with **Instructions** on their review. They list each column "
+               "to fill, what it takes and its responses; add how you want each one filled. Response rules "
+               "come from the *Responses that need a comment* tab.")
+    tabs = st.tabs([sp["name"] for sp in sheets]) if len(sheets) > 1 else [st.container()]
+    for tab, sp in zip(tabs, sheets):
+        fields = sme_instructions.fields(sp)
+        with tab, st.form(f"sme-instr:{job_id}:{sp['name']}", border=False):
+            note = st.text_area(
+                "Note at the top", value=sp.get("sme_note", ""), height=90,
+                placeholder="e.g. Answer for the hosted (SaaS) offering. Flag anything that needs a "
+                            "custom build for pricing.",
+                help="Shown first, highlighted. Markdown works.")
+            frame = pd.DataFrame({
+                "Column": [", ".join(f["columns"]) for f in fields],
+                "Header": [f["label"] for f in fields],
+                "Answer": [sme_instructions.kind_text(f) for f in fields],
+                "How to fill": [sme_instructions.how_to(f) for f in fields]})
+            edited = st.data_editor(
+                frame, hide_index=True, width="stretch", disabled=["Column", "Header", "Answer"],
+                key=f"sme-instr-grid:{job_id}:{sp['name']}",
+                column_config={"Column": st.column_config.TextColumn(width="small"),
+                               "How to fill": st.column_config.TextColumn(
+                                   width="large", help="What a good answer in this column looks like")})
+            save, preview = st.columns([1, 1])
+            saved = save.form_submit_button("Save", type="primary", width="stretch")
+            previewed = preview.form_submit_button("Save and preview", icon=":material/visibility:",
+                                                   width="stretch")
+        if saved or previewed:
+            helps = {f["key"]: h if isinstance(h, str) else "" for f, h in zip(fields, edited["How to fill"])}
+            draft.set_sme_instructions(job_id, sp["name"], note, helps)
+            sp["sme_note"] = note.strip()
+            for f in fields:
+                f["sme_help"] = helps[f["key"]].strip()
+            if previewed:
+                _preview_instructions(sp)
+            else:
+                st.toast("Instructions saved", icon=":material/check_circle:")
+
+
+def _advanced(job, job_id: str, plan: dict) -> None:
+    """Settings for the draft that are set once and rarely touched, closed away under one dropdown: one tab
+    each for auto-approve, the responses that need a comment, and the instructions SMEs read."""
+    sections = {"Auto-approve": lambda: _auto_approve(draft.auto_approve_rule(job), f"auto:{job_id}", job_id)}
+    if _rule_choices(plan):
+        sections[_rules_label(plan)] = lambda: _response_rules(job_id, plan)
+    if _instruction_sheets(plan):
+        sections["Instructions for SMEs"] = lambda: _sme_instructions_editor(job_id, plan)
+    with st.expander("Advanced configuration", icon=":material/tune:", key=f"advanced:{job_id}"):
+        for tab, show in zip(st.tabs(list(sections)), sections.values()):
+            with tab:
+                show()
 
 
 def _job_page(job_id: str):
@@ -431,9 +503,7 @@ def _job_page(job_id: str):
         r[3].metric("Unassigned", f"{int(unassigned.sum()):,}",
                     help="Rows no SME has and the rule didn't approve: never assigned, or sent back by an SME as "
                          "out of their area (Assigned to › Unassigned by an SME lists those)")
-        with st.container(key="auto-approve"):
-            _auto_approve(draft.auto_approve_rule(job), f"auto:{job_id}", job_id)
-        _response_rules(job_id, plan)
+        _advanced(job, job_id, plan)
         if note := st.session_state.pop("auto_note", None):
             st.toast(note, icon=":material/check_circle:")
         if modules.load() and (undetected := int(done.module.isna().sum())):
