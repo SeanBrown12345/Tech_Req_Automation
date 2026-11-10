@@ -104,6 +104,26 @@ def auto_only(view: pd.DataFrame) -> pd.Series:
     return view.assignee.isna() & (view.approved_by == "auto")
 
 
+def context_columns(sheet_plan: dict) -> list[str]:
+    """The headers of the client's columns this sheet shows reviewers (picked at draft setup)."""
+    headers = sheet_plan.get("headers", {})
+    return list(dict.fromkeys(headers.get(l, l) for l in sheet_plan.get("context_columns", [])))
+
+
+def context_values(view: pd.DataFrame, label: str) -> list[str | None]:
+    """One context column's values for the rows in `view`."""
+    cells = view.client_context if "client_context" in view.columns else [None] * len(view)
+    return [draft.client_context(c).get(label) for c in cells]
+
+
+def context_md(r) -> str:
+    """A row's context columns as one markdown line: **Submodule:** Payables · **Priority:** High."""
+    def esc(text):
+        return "".join("\\" + ch if ch in "\\`*_[]<>#|~$" else ch for ch in str(text))
+    items = draft.client_context(getattr(r, "client_context", None)).items()
+    return " · ".join(f"**{esc(label)}:** {esc(value)}" for label, value in items)
+
+
 def with_sections(view: pd.DataFrame) -> pd.DataFrame:
     """Add a `section` column: the coarsest heading level that varies in these rows (worksheets use
     different ones)."""
@@ -210,11 +230,16 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
     # every such row, and its header's tooltip says what each response's comment must include.
     rules = draft.comment_field(sheet_plan) is not None and any(f.get("requires") for f in fields)
     noted = "notes" in view.columns
+    # The client's context columns, beside the requirement; renamed if a header clashes with one of ours.
+    ours = {"Select", "Row", "Requirement", "Unassigned by", "Module", "Confidence", "Cost", "Status",
+            "Assigned to", "Approved", RULE, *(f["label"] for f in fields)}
+    shown = {(c if c not in ours else f"{c} (client)"): c for c in context_columns(sheet_plan)}
     frame = pd.DataFrame({
         **({"Select": [st.session_state.get(f"select_all:{key}", False)] * len(view)} if selectable else {}),
         "Row": view.row_num.values,
         "Requirement": [f"{r}  (under: {p})" if isinstance(p, str) and p else r
                         for p, r in zip(view.parent_text, view.requirement)],
+        **{name: context_values(view, label) for name, label in shown.items()},
         **({"Unassigned by": view.returned_by.values} if returned else {}),
         **({"Module": [name_or_none(m) for m in view.module]} if module_names else {}),
         **{f["label"]: [a.get(f["key"], "") if f["key"] in json.loads(fl) else None
@@ -271,12 +296,12 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
                                 height=height or min(760 if wrap else 520, 38 + (row_height + 1) * len(view)),
                                 row_height=row_height if wrap else None,
                                 column_order=[*(["Select"] if selectable else []), "Row",
-                                              "Requirement",
+                                              "Requirement", *shown,
                                               *[f["label"] for f in fields],
                                               "Confidence", "Cost", "Approved", *([RULE] if rules else [])]
                                 if reviewer else None,
                                 disabled=["Row", "Requirement", RULE, "Confidence", "Status",
-                                          "Unassigned by"],
+                                          "Unassigned by", *shown],
                                 key=f"grid:{key}:{_rows_sig(view)}:{st.session_state.get('grid_rev', 0)}")
 
     if blocked := st.session_state.pop(f"grid_blocked:{key}", None):
@@ -370,6 +395,8 @@ def details(view: pd.DataFrame, key: str) -> None:
                         format_func=lambda n: f"Row {n}: {by_row.loc[n, 'requirement'][:80]}")
     r = by_row.loc[pick]
     with st.container(border=True):  # the full requirement; the picker only shows its start
+        if line := context_md(r):
+            st.caption(line)
         if isinstance(r.parent_text, str) and r.parent_text:
             st.caption(f"Under: {r.parent_text}")
         st.markdown(r.requirement)

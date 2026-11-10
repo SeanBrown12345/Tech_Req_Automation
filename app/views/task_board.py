@@ -221,6 +221,8 @@ def _rows_table(view: pd.DataFrame, sheet_plan: dict) -> None:
     frame = pd.DataFrame({
         "Row": view.row_num.values,
         "Requirement": view.requirement.values,
+        **{label: review_grid.context_values(view, label) for label in review_grid.context_columns(sheet_plan)
+           if label not in ("Row", "Requirement", *(f["label"] for f in fields))},
         **{f["label"]: [a.get(f["key"]) or "" if f["key"] in json.loads(fl) else None
                         for a, fl in zip(answers, view.fill)] for f in fields},
         "AI Confidence": view.confidence.map(review_grid.CONF_LABELS).values,
@@ -792,6 +794,8 @@ def _row_review(person: str, job_id: str, sheet: str, view: pd.DataFrame, sheet_
         with jump.container(horizontal=True, horizontal_alignment="right", vertical_alignment="center"):
             _jump_menu(person, job_id, sheet, view, queue, row_num, nav)
         with st.container(key="rv-requirement"):
+            if line := review_grid.context_md(r):
+                st.caption(line)
             if isinstance(r.parent_text, str) and r.parent_text:
                 st.caption(f"Under: {r.parent_text}")
             st.markdown(r.requirement)
@@ -869,7 +873,9 @@ def _row_review(person: str, job_id: str, sheet: str, view: pd.DataFrame, sheet_
                          placeholder="Why it's theirs, or what you need from them. They see it on the row.")
             st.button("Accept", type="primary", width="stretch", disabled=choice is None,
                       on_click=_reassign, args=(person, *nav))
-        context = " › ".join(v for v in json.loads(r.context).values() if v) if isinstance(r.context, str) else ""
+        shown = set(draft.client_context(getattr(r, "client_context", None)).values())  # already above
+        context = (" › ".join(v for v in json.loads(r.context).values() if v and v not in shown)
+                   if isinstance(r.context, str) else "")
         st.caption(" · ".join(p for p in [r.req_id if isinstance(r.req_id, str) else "", f"Worksheet row {row_num}",
                                          context] if p))
     with st.container(border=True, key="card-why"):

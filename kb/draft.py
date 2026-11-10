@@ -101,6 +101,42 @@ def read_workbook(data: bytes) -> dict[str, list[tuple]]:
         wb.close()
 
 
+CONTEXT_MAX_LEN = 80   # a column's values must average this or less to be shown to reviewers by default
+
+
+def context_options(sp: dict) -> list[str]:
+    """Columns of a plan sheet that can be shown to reviewers as context: any but the requirement, its ID
+    and the columns being filled."""
+    taken = {sp["columns"].get("requirement"), sp["columns"].get("req_id")}
+    taken |= {c for f in sp["fields"] if f.get("include", True) for c in f["columns"]}
+    return [l for l in sp.get("headers", {}) if l not in taken]
+
+
+def _guess_context_columns(guess, fields: list[dict], rows: list[tuple], req_rows: list[int]) -> list[str]:
+    """Columns to show reviewers by default: the category and sub-category, and any other column we aren't
+    filling that the client filled with short text on most requirement rows (a "Submodule", a "Priority")."""
+    sp = {"columns": guess.columns, "fields": fields, "headers": guess.headers}
+    picked = []
+    for letter in context_options(sp):
+        idx = _col(letter)
+        values = [clean(rows[i - 1][idx]) for i in req_rows if idx < len(rows[i - 1]) and clean(rows[i - 1][idx])]
+        if not values:
+            continue
+        role = letter in (guess.columns.get("category"), guess.columns.get("subcategory"))
+        if role or (len(values) >= 0.5 * len(req_rows) and sum(map(len, values)) / len(values) <= CONTEXT_MAX_LEN):
+            picked.append(letter)
+    return picked
+
+
+def client_context(value) -> dict[str, str]:
+    """A row's client_context ({header: value} from the columns shown to reviewers); {} when it has none."""
+    try:
+        parsed = json.loads(value) if isinstance(value, str) and value else {}
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def guess_plan(data: bytes, sheets: dict[str, list[tuple]] | None = None,
                header_rows: dict[str, int] | None = None) -> dict:
     """Propose a fill plan for a blank worksheet. Every part is meant to be reviewed by a person.
@@ -175,6 +211,8 @@ def guess_plan(data: bytes, sheets: dict[str, list[tuple]] | None = None,
             "name": name, "header_row": hdr, "include": bool(fields),
             "columns": {k: v for k, v in roles.items() if k != "comment"},
             "fields": fields,
+            "headers": guess.headers,
+            "context_columns": _guess_context_columns(guess, fields, rows, req_rows),
         })
 
     return {"sheets": plan_sheets, "instructions": "\n\n".join(instruction_parts)}
@@ -207,6 +245,7 @@ CREATE TABLE IF NOT EXISTS rows (
     requirement  TEXT NOT NULL,
     parent_text  TEXT,
     context      TEXT,                  -- category / subcategory / section
+    client_context TEXT,                -- JSON {header: value}: the client's columns picked to show reviewers
     fill         TEXT NOT NULL,         -- JSON list of field keys to fill
     prefilled    TEXT NOT NULL,         -- JSON {label: value} already in the template
     ai           TEXT,                  -- JSON {field key: value} as drafted
@@ -279,7 +318,7 @@ _ADDED_COLUMNS = {
     "jobs": {"auto_approve": "TEXT"},
     "rows": {"assignee": "TEXT", "returned_by": "TEXT", "return_note": "TEXT", "module": "TEXT",
              "partner_status": "TEXT", "sent_at": "TEXT", "received_at": "TEXT", "approved_by": "TEXT",
-             "notified": "TEXT", "cost_by": "TEXT"},
+             "notified": "TEXT", "cost_by": "TEXT", "client_context": "TEXT"},
     "people": {"kind": "TEXT NOT NULL DEFAULT 'sme'", "modules": "TEXT"},
     "row_notes": {"resolved_at": "TEXT", "resolved_by": "TEXT"},
     "notices": {"planner_url": "TEXT", "planner_at": "TEXT"},
@@ -400,8 +439,14 @@ def collect_rows(plan: dict, sheets: dict[str, list[tuple]]) -> list[dict]:
                 continue
             context = {k: clean(row[cols[k]]) for k in ("category", "subcategory") if k in cols and cols[k] < len(row)}
             context["section"] = section
+            shown = {}
+            for letter in sp.get("context_columns", []):
+                label = sp.get("headers", {}).get(letter, letter)
+                if (value := clean(cell(row, letter))) and label not in shown:
+                    shown[label] = value
             out.append({"sheet": sp["name"], "row_num": row_num, "req_id": req_id, "requirement": requirement,
-                        "parent_text": parent, "context": context, "fill": fill, "prefilled": prefilled})
+                        "parent_text": parent, "context": context, "client_context": shown, "fill": fill,
+                        "prefilled": prefilled})
     return out
 
 
@@ -419,10 +464,11 @@ def create_job(name: str, client: str | None, filename: str, data: bytes, plan: 
                      (job_id, name, client, filename, datetime.now(timezone.utc).isoformat(timespec="seconds"),
                       json.dumps(plan), len(rows), MODEL, json.dumps(auto_approve or AUTO_DEFAULT)))
         conn.executemany(
-            "INSERT INTO rows (job_id, sheet, row_num, req_id, requirement, parent_text, context, fill, prefilled)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO rows (job_id, sheet, row_num, req_id, requirement, parent_text, context, client_context,"
+            " fill, prefilled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [(job_id, r["sheet"], r["row_num"], r["req_id"], r["requirement"], r["parent_text"],
-              json.dumps(r["context"]), json.dumps(r["fill"]), json.dumps(r["prefilled"])) for r in rows])
+              json.dumps(r["context"]), json.dumps(r["client_context"]) if r["client_context"] else None,
+              json.dumps(r["fill"]), json.dumps(r["prefilled"])) for r in rows])
     conn.close()
     return job_id, len(rows)
 
@@ -541,6 +587,7 @@ def _user_message(rows: list[dict], evidence_text: dict[int, str]) -> str:
         parts.append("\n".join(filter(None, [
             f"ROW {r['row_num']}" + (f" (ID {r['req_id']})" if r["req_id"] else ""),
             f"Context: {ctx}" if ctx else None,
+            *[f"{label}: {value}" for label, value in client_context(r.get("client_context")).items()],
             f"Under: {r['parent_text']}" if r["parent_text"] else None,
             f"Requirement: {r['requirement']}",
             f"fill: {', '.join(json.loads(r['fill']))}",

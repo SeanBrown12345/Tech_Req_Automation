@@ -265,6 +265,16 @@ def new_draft():
                         f["options"] = opts
                         if not opts:
                             st.warning(f"Column {f['columns'][0]} is *Pick from list* but has no response options.")
+            if "headers" in sp:  # plans saved before context columns existed have no headers
+                options = draft.context_options(sp)
+                sp["context_columns"] = st.multiselect(
+                    "Show to reviewers", options, default=[l for l in sp.get("context_columns", []) if l in options],
+                    format_func=lambda l, h=sp["headers"]: f"{l} · {h[l]}",
+                    key=k(f"{sp['name']}:context:{sp['header_row']}"),
+                    placeholder="No context columns",
+                    help="The client's columns that tell an SME what a requirement is about (a module, a "
+                         "submodule, a business process...). Shown with the requirement during review, and given "
+                         "to the AI. Columns ticked to fill aren't offered.")
 
     st.subheader("Instructions")
     plan["instructions"] = st.text_area(
