@@ -256,6 +256,8 @@ CREATE TABLE IF NOT EXISTS notices (
     due          TEXT,                  -- when their review of the draft is due, YYYY-MM-DD
     emailed_at   TEXT,                  -- last email to them about the draft
     emailed_kind TEXT,                  -- new (assignments) | reminder
+    planner_url  TEXT,                  -- the Microsoft Planner task last created for them on the draft
+    planner_at   TEXT,                  -- when it was created
     PRIMARY KEY (job_id, person)
 );
 CREATE TABLE IF NOT EXISTS row_notes (  -- messages about a row between whoever handles it (see add_note)
@@ -280,6 +282,7 @@ _ADDED_COLUMNS = {
              "notified": "TEXT", "cost_by": "TEXT"},
     "people": {"kind": "TEXT NOT NULL DEFAULT 'sme'", "modules": "TEXT"},
     "row_notes": {"resolved_at": "TEXT", "resolved_by": "TEXT"},
+    "notices": {"planner_url": "TEXT", "planner_at": "TEXT"},
 }
 
 _drafts_ready = False  # Postgres: tables created once per process
@@ -1059,21 +1062,22 @@ def note_summary() -> "pd.DataFrame":
 
 def sme_workload() -> "pd.DataFrame":
     """One line per SME per draft they have open rows in (partners aren't emailed): person, email, job_id,
-    draft_name, client, open, new (open rows they haven't been emailed about), due, emailed_at, emailed_kind."""
+    draft_name, client, open, new (open rows they haven't been emailed about), due, emailed_at, emailed_kind,
+    planner_url and planner_at (the Planner task last created for them on the draft)."""
     conn = connect_drafts()
     try:
         return db.read_sql(conn, """
             SELECT r.assignee AS person, p.email, r.job_id, j.name AS draft_name, j.client,
                    COUNT(*) AS open,
                    COUNT(CASE WHEN r.notified IS NULL OR r.notified <> r.assignee THEN 1 END) AS new,
-                   n.due, n.emailed_at, n.emailed_kind
+                   n.due, n.emailed_at, n.emailed_kind, n.planner_url, n.planner_at
             FROM rows r
             JOIN people p ON p.name = r.assignee AND p.kind = ?
             JOIN jobs j ON j.job_id = r.job_id
             LEFT JOIN notices n ON n.job_id = r.job_id AND n.person = r.assignee
             WHERE r.reviewed = 0 AND r.ai IS NOT NULL
             GROUP BY r.assignee, p.email, r.job_id, j.name, j.client, j.created_at, n.due, n.emailed_at,
-                     n.emailed_kind
+                     n.emailed_kind, n.planner_url, n.planner_at
             ORDER BY j.created_at DESC, LOWER(r.assignee)""", [SME])
     finally:
         conn.close()
@@ -1141,6 +1145,38 @@ def record_email(job_id: str, person: str, kind: str, rows: list[tuple[str, int]
         conn.execute("INSERT INTO notices (job_id, person, emailed_at, emailed_kind) VALUES (?, ?, ?, ?)"
                      " ON CONFLICT (job_id, person) DO UPDATE SET emailed_at = excluded.emailed_at,"
                      " emailed_kind = excluded.emailed_kind", (job_id, person, _now(), kind))
+    conn.close()
+
+
+def record_planner_task(job_id: str, person: str, url: str) -> None:
+    """A Microsoft Planner task was created for `person`'s review of the draft (url opens it)."""
+    conn = connect_drafts()
+    with conn:
+        conn.execute("INSERT INTO notices (job_id, person, planner_url, planner_at) VALUES (?, ?, ?, ?)"
+                     " ON CONFLICT (job_id, person) DO UPDATE SET planner_url = excluded.planner_url,"
+                     " planner_at = excluded.planner_at", (job_id, person, url, _now()))
+    conn.close()
+
+
+def app_setting(key: str) -> str | None:
+    """A value kept in the app_settings table (None when unset)."""
+    conn = connect_drafts()
+    try:
+        row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def set_app_setting(key: str, value: str | None) -> None:
+    """Save a value in the app_settings table; None removes it."""
+    conn = connect_drafts()
+    with conn:
+        if value is None:
+            conn.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+        else:
+            conn.execute("INSERT INTO app_settings (key, value) VALUES (?, ?)"
+                         " ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value))
     conn.close()
 
 

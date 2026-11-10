@@ -6,5 +6,6 @@ python-dotenv>=1.0
 streamlit>=1.40
 altair>=5
 anthropic>=0.70
+requests>=2.31   # Microsoft Planner (kb/planner.py)
 lxml>=5
 psycopg2-binary>=2.9   # hosted only: Postgres when KB_DATABASE_URL is set
