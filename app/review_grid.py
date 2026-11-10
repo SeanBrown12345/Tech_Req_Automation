@@ -168,10 +168,22 @@ def section_and_module(view: pd.DataFrame, section: str, module: str) -> pd.Data
     return view
 
 
-def _wrapped_row_height(texts) -> int:
-    """Row height that shows the longest of `texts` in full in a "large" column (~55 characters a line),
-    capped at 12 lines. The grid has one height for every row, so all rows get it."""
-    lines = max((len(t) // 55 + 1 for t in texts if isinstance(t, str)), default=1)
+WRAP_FIT = 0.8   # wrapped rows are tall enough for this share of rows to show in full
+
+
+def _text_lines(text) -> int:
+    """Lines `text` takes in a "large" column (~55 characters a line), counting its own line breaks."""
+    if not isinstance(text, str) or not text:
+        return 1
+    return sum(len(part) // 55 + 1 for part in text.splitlines())
+
+
+def _wrapped_row_height(cells: pd.DataFrame) -> int:
+    """Row height for wrapped text. The grid has one height for every row, so sizing it to the longest row
+    makes every row as tall as that one: instead it fits most rows (WRAP_FIT) in full, capped at 12 lines.
+    Longer cells end in "…"; clicking one shows all of it."""
+    per_row = sorted(max((_text_lines(v) for v in row), default=1) for row in cells.itertuples(index=False))
+    lines = per_row[int(WRAP_FIT * (len(per_row) - 1))] if per_row else 1
     return 16 + 20 * min(lines, 12)
 
 
@@ -287,7 +299,7 @@ def grid(job_id: str, sheet_plan: dict, view: pd.DataFrame, key: str, height: in
                 wrap = st.toggle("Wrap text", key=f"wrap:{key}",
                                  help="Make rows tall enough to show the whole requirement and written answers")
         written = [f["label"] for f in fields if f["kind"] not in ("choice", "marks")]
-        row_height = _wrapped_row_height(frame[["Requirement", *written]].stack()) if wrap else 35
+        row_height = _wrapped_row_height(frame[["Requirement", *written]]) if wrap else 35
         if noted:
             tinted = [i for i, n in enumerate(view.notes.values) if n > 0]
             st.html(_NOTE_TINT.replace("BOX", box).replace("ROWS", ",".join(map(str, tinted)))
