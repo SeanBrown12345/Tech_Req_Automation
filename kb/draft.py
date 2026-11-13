@@ -15,17 +15,20 @@ import os
 import re
 import threading
 import uuid
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import anthropic
+import yaml
 from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string
 
 from kb import db, modules, settings, store
-from kb.detect import guess_sheet, read_rows
+from kb.detect import guess_sheet, guess_status, read_rows
 from kb.embed import Embedder, embedding_text
-from kb.extract import _CHILD_ID, clean, iter_requirements
+from kb.extract import _CHILD_ID, clean, extract_profile, iter_requirements
+from kb.profile import load_scales, parse_profile
 from kb.statuses import STATUSES
 from kb.xlsx_patch import dropdowns, patch_workbook
 
@@ -1400,6 +1403,114 @@ def build_output(job_id: str, highlight_low: bool = True, highlight_cost: bool =
             fills.setdefault(sheet, {})[f"{req_col[sheet]}{n}"] = YELLOW
 
     return patch_workbook(workbook_path(job_id).read_bytes(), values, fills)
+
+
+# ================================================================================================
+# Knowledge base: a finished draft becomes a past answer, like a completed worksheet added by hand
+# ================================================================================================
+
+def kb_source_id(job) -> str:
+    """The knowledge-base ID a draft is saved under: client and name, as the Add worksheet page makes it."""
+    text = f"{job['client'] or ''}_{job['name']}".strip("_")
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")[:60]
+
+
+def _kb_profile(plan: dict, rows: list) -> dict:
+    """A profile (see kb.profile) reading the drafted columns back. The first marks or pick-from-list field is
+    the answer; each of its responses maps to the status the AI gave most often with it. Other picked and
+    free-text answers are kept as written, the comment field is the comment, and the reviewer context columns
+    become details."""
+    answers = {}
+    for r in rows:
+        answers.setdefault(r["sheet"], []).append((json.loads(r["final"] or r["ai"] or "{}"), r["status"]))
+
+    def status_for(key: str, value: str) -> str | None:
+        votes = Counter(s for a, s in answers.get(sheet, []) if a.get(key) == value and s in STATUSES)
+        return votes.most_common(1)[0][0] if votes else guess_status(value)
+
+    sheets = []
+    for sp in plan["sheets"]:
+        sheet = sp["name"]
+        fields = [f for f in sp["fields"] if f.get("include", True)]
+        if not sp.get("include", True) or not fields or sheet not in answers:
+            continue
+        columns = {role: letter for role, letter in sp["columns"].items() if letter}
+        comment = comment_field(sp)
+        if comment:
+            columns["comment"] = comment["columns"][0]
+        signals, has_status = [], False
+        for f in fields:
+            if f is comment:
+                continue
+            name = re.sub(r"[^a-z0-9]+", "_", f["label"].lower()).strip("_")[:60] or f["key"].lower()
+            if f["kind"] == "marks" and not has_status:
+                marks = {c: s for c in f["columns"] if (s := status_for(f["key"], f["labels"][c]))}
+                if marks:
+                    signals.append({"name": name, "marks": marks})
+                    has_status = True
+                    continue
+            if f["kind"] == "choice" and not has_status:
+                seen = {a.get(f["key"]) for a, _ in answers[sheet]} - {None, ""}
+                signals.append({"name": name, "column": f["columns"][0],
+                                "values": {v: status_for(f["key"], v) for v in [*(f.get("options") or []), *seen]}})
+                has_status = True
+                continue
+            signals += [{"name": f"{name}_{c}" if len(f["columns"]) > 1 else name, "column": c, "as_written": True}
+                        for c in f["columns"]]
+        headers = sp.get("headers", {})
+        attributes = {re.sub(r"[^a-z0-9]+", "_", headers.get(l, l).lower()).strip("_") or l: l
+                      for l in sp.get("context_columns", []) if l not in columns.values()}
+        sheets.append({"name": sheet, "header_row": sp["header_row"], "columns": columns, "answer": signals}
+                      | ({"attributes": attributes} if attributes else {}))
+    return {"sheets": sheets}
+
+
+def kb_counts(job_id: str) -> tuple[int, int]:
+    """(approved rows, drafted rows) of a draft: what adding it to the knowledge base can take."""
+    conn = connect_drafts()
+    row = conn.execute("SELECT SUM(reviewed), COUNT(*) FROM rows WHERE job_id = ? AND ai IS NOT NULL",
+                       (job_id,)).fetchone()
+    conn.close()
+    return int(row[0] or 0), int(row[1] or 0)
+
+
+def add_to_knowledge_base(job_id: str, kb_conn, embedder: Embedder, submitted: str | None,
+                          approved_only: bool = True) -> tuple[str, int, int]:
+    """Save the draft's answers as a completed worksheet in the knowledge base: the workbook with the answers
+    written in (approved rows only, unless `approved_only` is off) and a profile reading them, in the same
+    places the Add worksheet page saves to, so the draft is listed and removed there and survives a rebuild.
+    Adding a draft again replaces what it added before. Returns (source ID, records, new embeddings)."""
+    conn = connect_drafts()
+    job = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    rows = conn.execute("SELECT * FROM rows WHERE job_id = ? AND ai IS NOT NULL"
+                        + (" AND reviewed = 1" if approved_only else ""), (job_id,)).fetchall()
+    conn.close()
+    if not rows:
+        raise ValueError("No approved rows to add yet." if approved_only else "Nothing has been drafted yet.")
+    plan = json.loads(job["plan"])
+    source_id = kb_source_id(job)
+    if (settings.REPO_PROFILES_DIR / f"{source_id}.yaml").exists():
+        raise ValueError(f"ID `{source_id}` is used by a worksheet managed in git; rename the draft.")
+
+    fields_by_sheet = {sp["name"]: {f["key"]: f for f in sp["fields"]} for sp in plan["sheets"]}
+    values: dict[str, dict[str, str]] = {}
+    for r in rows:
+        values.setdefault(r["sheet"], {}).update(_answer_cells(r, fields_by_sheet[r["sheet"]])[0])
+    suffix = ".xlsm" if job["filename"].lower().endswith(".xlsm") else ".xlsx"
+    settings.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    settings.DATA_PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    workbook = settings.UPLOADS_DIR / f"{source_id}{suffix}"
+    workbook.write_bytes(patch_workbook(workbook_path(job_id).read_bytes(), values))
+
+    raw = {"file": workbook.relative_to(settings.DATA_DIR).as_posix(),
+           "source": {"client": job["client"] or None, "rfp": None, "worksheet": job["name"],
+                      "submitted": submitted, "products": [], "draft": job_id}} | _kb_profile(plan, rows)
+    profile_path = settings.DATA_PROFILES_DIR / f"{source_id}.yaml"
+    profile_path.write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    profile = parse_profile(raw, source_id, load_scales(settings.SCALES_FILE), settings.DATA_DIR, profile_path)
+    records, _ = extract_profile(profile)
+    store.replace_source(kb_conn, profile, records)
+    return source_id, len(records), store.embed_missing(kb_conn, embedder)
 
 
 # ================================================================================================

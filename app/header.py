@@ -103,7 +103,7 @@ def render_header(home_page, draft_page, board_page, admin_page, in_admin: bool 
     with st.container(key="reqfill-home"):
         st.page_link(home_page, label="Home")
     with st.container(key="reqfill-gear", horizontal=True):
-        st.page_link(draft_page, label="Draft a worksheet", icon=":material/edit_note:", help="Draft a worksheet")
+        st.page_link(draft_page, label="Draft a worksheet", icon=":material/edit_note:", help="Drafts")
         st.page_link(board_page, label="Task board", icon=":material/assignment_ind:", help="Task board")
         if in_admin:
             st.page_link(home_page, label="Home", icon=":material/arrow_back:", help="Home")

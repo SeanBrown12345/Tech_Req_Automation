@@ -7,8 +7,8 @@ import streamlit as st
 
 from app import review_grid, sme_instructions
 from app.admin_layout import ACCENT
-from app.common import card_styles
-from kb import db, draft, modules
+from app.common import card_styles, connect, embedder
+from kb import db, draft, modules, settings
 
 KIND_LABELS = {"choice": "Pick from list", "text": "Free text", "marks": "Mark one column"}
 
@@ -108,6 +108,42 @@ def _confirm_delete(job_id: str):
         draft.delete_job(job_id)
         if job_id == choice:
             st.session_state.draft_job_next = NEW
+        st.rerun()
+
+
+@st.dialog("Add to knowledge base?")
+def _confirm_add_to_kb(job_id: str):
+    """Second step of adding a draft to the knowledge base: what goes in, and Cancel / Add."""
+    job = jobs.set_index("job_id").loc[job_id]
+    approved, drafted = draft.kb_counts(job_id)
+    source_id = draft.kb_source_id({"client": job.client if isinstance(job.client, str) else None,
+                                    "name": job["name"]})
+    st.write(f"**{labels[job_id]}**")
+    include_all = st.checkbox(f"Also add the {drafted - approved:,} rows not yet approved", value=False,
+                              disabled=approved == drafted,
+                              help="Unapproved rows are the AI's answers as drafted, which nobody has checked.")
+    count = drafted if include_all else approved
+    submitted = st.date_input("Submitted on", value="today", format="YYYY-MM-DD")
+    st.caption(f"Adds **{count:,}** of {drafted:,} drafted rows as `{source_id}`")
+    if (settings.DATA_PROFILES_DIR / f"{source_id}.yaml").exists():
+        st.warning("This draft (or a worksheet with the same client and name) is already in the knowledge "
+                   "base; adding replaces it.")
+    cancel, add = st.columns(2)
+    if cancel.button("Cancel", width="stretch"):
+        st.rerun()
+    if add.button("Add to knowledge base", type="primary", width="stretch", disabled=not count):
+        conn = connect()
+        try:
+            with st.spinner("Loading and indexing..."):
+                _, records, added = draft.add_to_knowledge_base(
+                    job_id, conn, embedder(), submitted.isoformat() if submitted else None,
+                    approved_only=not include_all)
+        except Exception as exc:
+            st.error(f"Couldn't add this draft: {exc}")
+            return
+        finally:
+            conn.close()
+        st.session_state.kb_note = f"Added {records:,} answers to the knowledge base ({added:,} new embeddings)."
         st.rerun()
 
 
@@ -303,9 +339,23 @@ def new_draft():
 # =================================================================================================
 def show_job(job_id: str):
     _job_page(job_id)
-    # Last, so it ends the page even when the page above stops early (no rows yet, Errors view...).
+    # Last, so they end the page even when the page above stops early (no rows yet, Errors view...).
+    _add_to_kb(job_id)
     job = jobs.set_index("job_id").loc[job_id]
     st.caption(f"{job.filename} · created {job.created_at[:16].replace('T', ' ')} UTC · model {job.model}")
+
+
+def _add_to_kb(job_id: str) -> None:
+    """The button at the foot of a draft that adds its answers to the knowledge base, after a confirmation."""
+    if note := st.session_state.pop("kb_note", None):
+        st.toast(note, icon=":material/check_circle:")
+    if not draft.kb_counts(job_id)[1]:
+        return  # nothing drafted yet
+    running = draft.is_running(job_id)
+    if st.button("Add to knowledge base", icon=":material/library_add:", key=f"kb-add:{job_id}",
+                 disabled=running, help="Stop drafting first" if running
+                 else "Asks you to confirm before anything is added"):
+        _confirm_add_to_kb(job_id)
 
 
 def _rule_choices(plan: dict) -> list[tuple[dict, dict]]:
